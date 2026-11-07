@@ -1,5 +1,5 @@
 """
-Phase 2 - load_baseline.py  (v2: now with the 360-degree activity view)
+Phase 2 - load_baseline.py  (v3: 360 activity view + dormancy history)
 ==========================
 Loads the real Kaggle bank churn CSV into Neon as our historical baseline,
 and adds SYNTHETIC Ghana digital-channel columns on the way in.
@@ -12,6 +12,8 @@ What it does, step by step:
      documented rules so they relate plausibly to the real columns.
   3b. Generates the 360 ACTIVITY columns (branch walk-ins, ATM, salary
      credits, complaints, recency, balance trend, total activity).
+  3c. Generates a SYNTHETIC dormancy history: did each active customer go
+     dormant (no activity for 90+ days) in the following 90 days?
   4. Saves a copy as dataset/bank_churn_ghana.csv so you can open it in Excel.
   5. Bulk-inserts everything into the bank_customers table in Neon.
   6. Prints a short summary so you can see what was loaded.
@@ -224,6 +226,54 @@ def add_activity_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------
+# 2c. SYNTHETIC dormancy (Phase 8)
+# ---------------------------------------------------------------------
+DORMANT_AFTER_DAYS = 90      # business rule: 3 months with no activity of any kind
+
+
+def dormancy_propensity(df: pd.DataFrame) -> np.ndarray:
+    """
+    Chance that a currently ACTIVE customer goes dormant in the next 90 days.
+    Like every synthetic rule here it is an ASSUMPTION, written down openly:
+    disengaged customers (inactive, no salary in, no app/MoMo, already quiet,
+    balance draining) are the ones who drift into dormancy.
+    """
+    active = df["active_member"].to_numpy()
+    salary = df["salary_credited"].to_numpy()
+    no_digital = ((df["uses_mobile_app"] == 0) & (df["momo_linked"] == 0)).to_numpy().astype(int)
+    days = df["days_since_last_txn"].to_numpy()
+    total = df["total_txn_count_90d"].to_numpy()
+    draining = np.clip(-df["balance_change_3m_pct"].to_numpy(), 0, None)
+    older = (df["age"].to_numpy() > 60).astype(int)
+    multi_product = (df["products_number"].to_numpy() >= 2).astype(int)
+    churn = df["churn"].to_numpy()
+
+    logit = (-1.9 + 0.9 * (1 - active) + 0.7 * (1 - salary) + 0.8 * no_digital
+             + 0.025 * np.clip(days, 0, 89) - 0.06 * total + 0.03 * draining
+             + 0.3 * older - 0.3 * multi_product + 0.5 * churn)
+    return sigmoid(logit)
+
+
+def daily_activity_prob(df: pd.DataFrame) -> np.ndarray:
+    """
+    How likely the customer is to do SOMETHING on any given day (a transfer,
+    a balance check on USSD, a login...). Busier customers -> higher chance.
+    Used only by the simulator to 'age' customers over time.
+    """
+    total = df["total_txn_count_90d"].to_numpy()
+    return np.clip(1 - np.exp(-1.3 * (total + 3) / 90), 0.02, 0.9)
+
+
+def add_dormancy_features(df: pd.DataFrame) -> pd.DataFrame:
+    n = len(df)
+    already_dormant = df["days_since_last_txn"].to_numpy() >= DORMANT_AFTER_DAYS
+    went = (rng.random(n) < dormancy_propensity(df)).astype(float)
+    # Customers who are ALREADY dormant can't "go" dormant: label is unknown (NULL).
+    df["went_dormant_90d"] = pd.array(np.where(already_dormant, np.nan, went), dtype="Int64")
+    return df
+
+
+# ---------------------------------------------------------------------
 # 3. Insert into Neon
 # ---------------------------------------------------------------------
 INSERT_COLUMNS = EXPECTED + [
@@ -232,13 +282,15 @@ INSERT_COLUMNS = EXPECTED + [
     # 360 activity view
     "days_since_last_txn", "branch_visits_90d", "atm_withdrawals_90d",
     "total_txn_count_90d", "salary_credited", "complaints_90d", "balance_change_3m_pct",
+    # dormancy history (synthetic label)
+    "went_dormant_90d",
 ]
 
 
 def insert_rows(df: pd.DataFrame) -> int:
     # Convert numpy types to plain Python types that psycopg2 understands.
     rows = [
-        tuple(v.item() if hasattr(v, "item") else v for v in rec)
+        tuple(None if pd.isna(v) else (v.item() if hasattr(v, "item") else v) for v in rec)
         + ("kaggle", True)                        # data_source, ghana_features_synthetic
         for rec in df[INSERT_COLUMNS].itertuples(index=False)
     ]
@@ -288,6 +340,11 @@ def print_summary(df: pd.DataFrame):
             "days_since_last_txn", "complaints_90d", "balance_change_3m_pct"]
     print(df.groupby("churn")[cols].mean().round(1).T.to_string())
 
+    dormant = (df["days_since_last_txn"] >= DORMANT_AFTER_DAYS).mean()
+    print(f"\nAlready dormant (no activity for {DORMANT_AFTER_DAYS}+ days): {dormant:.1%}")
+    print(f"Of the active ones, went dormant in the next 90 days (synthetic): "
+          f"{df['went_dormant_90d'].mean():.1%}")
+
     print("\nPrimary channel share:")
     print(df["primary_channel"].value_counts(normalize=True).map("{:.1%}".format).to_string())
 
@@ -299,6 +356,7 @@ if __name__ == "__main__":
     data = load_kaggle_csv()
     data = add_ghana_features(data)
     data = add_activity_features(data)
+    data = add_dormancy_features(data)
 
     data.to_csv(CSV_OUT, index=False)
     print(f"  Saved enriched copy to dataset/{CSV_OUT.name}")

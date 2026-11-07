@@ -57,6 +57,7 @@ function showView(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === name));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
   if (name === "customers") loadCustomers();
+  if (name === "dormancy") loadDormancy().catch(showError);
   if (name === "model") loadModel();
 }
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showView(t.dataset.view)));
@@ -180,6 +181,7 @@ async function loadTopRisk() {
 const REGIONS = ["Greater Accra", "Ashanti", "Western", "Eastern", "Central",
                  "Northern", "Volta", "Bono", "Upper East", "Upper West"];
 $("#f-region").insertAdjacentHTML("beforeend", REGIONS.map((r) => `<option>${r}</option>`).join(""));
+$("#d-region").insertAdjacentHTML("beforeend", REGIONS.map((r) => `<option>${r}</option>`).join(""));
 
 let offset = 0;
 
@@ -265,7 +267,14 @@ async function openCustomer(id) {
       ${riskBar(c.churn_probability, c.risk_band)}
       <p><strong>Stage:</strong> ${esc(c.lifecycle_stage)}</p>
 
-      <h3>Warning signs</h3>${signsList(c.warning_signs)}
+      <h3>Churn warning signs</h3>${signsList(c.warning_signs)}
+      <h3>Dormancy</h3>
+      <p>${c.dormancy_status === "dormant"
+          ? `<span class="pill dormant">dormant</span> for ${c.days_since_last_txn - 90} days past the 90-day rule`
+          : c.dormancy_probability != null
+            ? `${riskPill(c.dormancy_band)} <strong>${fmtPct(c.dormancy_probability)}</strong> chance of going dormant in 90 days`
+            : `<span class="muted">Not scored for dormancy yet</span>`}</p>
+      ${signsList(c.dormancy_reasons)}
       <h3>Channels</h3><div class="chips">${chips}</div>
       <h3>Activity (last 90 days)</h3>
       ${kv([["Transactions", c.total_txn_count_90d], ["Days since last", c.days_since_last_txn],
@@ -313,8 +322,14 @@ $("#whatif-form").addEventListener("submit", async (e) => {
       <div class="gauge"><span class="gauge-value">${fmtPct(r.churn_probability)}</span>${riskPill(r.risk_band)}</div>
       ${riskBar(r.churn_probability, r.risk_band)}
       <p><strong>Stage:</strong> ${esc(r.lifecycle_stage)}</p>
-      <h3 class="muted" style="font-size:.8rem;text-transform:uppercase">Warning signs</h3>
+      <h3 class="muted" style="font-size:.8rem;text-transform:uppercase">Churn warning signs</h3>
       ${signsList(r.warning_signs)}
+      <h3 class="muted" style="font-size:.8rem;text-transform:uppercase;margin-top:16px">Dormancy</h3>
+      <p>${r.dormancy_status === "dormant"
+          ? '<span class="pill dormant">already dormant</span> (90+ days with no activity)'
+          : r.dormancy_probability != null
+            ? `${riskPill(r.dormancy_band)} <strong>${fmtPct(r.dormancy_probability)}</strong> chance of going dormant in 90 days`
+            : '<span class="muted">Dormancy model not trained yet</span>'}</p>
       <p class="muted" style="margin-top:16px">Not saved: this only asks the model. Model ${esc(r.model_version)}</p>`;
   } catch (err) {
     box.innerHTML = `<p class="muted">Could not score: ${esc(err.message)}</p>`;
@@ -342,7 +357,104 @@ async function loadModel() {
     cell(fmtInt(x.confusion_matrix.fn), "Churners missed (test)"),
     cell(fmtInt(x.confusion_matrix.fp), "False alarms (test)"),
   ].join("");
+
+  const d = m.dormancy;
+  $("#dormancy-model-info").innerHTML = d
+    ? [cell(esc(d.model_name), "Model"), cell(esc(d.model_version), "Version"),
+       cell(d.threshold.toFixed(2), "Decision threshold"), cell(d.metrics.roc_auc.toFixed(3), "ROC-AUC"),
+       cell(d.metrics.pr_auc.toFixed(3), "PR-AUC"), cell(fmtPct(d.metrics.precision), "Precision"),
+       cell(fmtPct(d.metrics.recall), "Recall: drifters we caught"),
+       cell(esc(d.drivers[0]?.label ?? "–"), "Top driver")].join("")
+    : '<p class="muted">Not trained yet. Run <code>python scripts\\train_dormancy_model.py</code></p>';
 }
+
+// =====================================================================
+// DORMANCY PAGE (Phase 8)
+// =====================================================================
+let dStatus = "going";
+let dOffset = 0;
+
+async function loadDormancy() {
+  const s = await api("/api/dormancy/summary");
+  $("#d-dormant").textContent = fmtInt(s.dormant);
+  $("#d-dormant-sub").textContent = s.dormant ? `idle ${fmtInt(s.avg_days_idle_dormant)} days on average` : "none yet";
+  $("#d-dormant-bal").textContent = fmtMoney(s.dormant_balance);
+  $("#d-going").textContent = s.model_trained ? fmtInt(s.going_dormant_high) : "–";
+  $("#d-going-sub").textContent = s.model_trained
+    ? `of ${fmtInt(s.active)} active customers · avg risk ${fmtPct(s.avg_dormancy_probability)}`
+    : "train the dormancy model first";
+  $("#d-going-bal").textContent = fmtMoney(s.going_dormant_balance);
+
+  const jobs = [loadIdleBuckets(), loadDormancyTable()];
+  if (s.model_trained) jobs.push(loadDrivers());
+  await Promise.all(jobs);
+}
+
+async function loadDrivers() {
+  if (charts.drivers || !chartsAvailable()) return;          // drivers only change when retrained
+  const rows = await api("/api/dormancy/drivers");
+  const opts = baseOptions();
+  opts.indexAxis = "y";
+  opts.plugins.legend = { display: false };
+  opts.scales.x.ticks = { callback: (v) => v + "%" };
+  charts.drivers = new Chart($("#drivers-chart"), {
+    type: "bar", options: opts,
+    data: { labels: rows.map((r) => r.label),
+            datasets: [{ data: rows.map((r) => +(r.importance * 100).toFixed(1)),
+                         backgroundColor: cssVar("--accent") + "cc", borderRadius: 4 }] },
+  });
+}
+
+async function loadIdleBuckets() {
+  const rows = await api("/api/dormancy/idle-buckets");
+  if (!chartsAvailable()) return;
+  const colours = rows.map((r) => (r.label.includes("dormant") ? cssVar("--high") : cssVar("--brand")) + "cc");
+  const data = { labels: rows.map((r) => r.label),
+                 datasets: [{ data: rows.map((r) => r.customers), backgroundColor: colours, borderRadius: 4 }] };
+  if (charts.idle) { charts.idle.data = data; charts.idle.update(); return; }
+  const opts = baseOptions();
+  opts.plugins.legend = { display: false };
+  charts.idle = new Chart($("#idle-chart"), { type: "bar", data, options: opts });
+}
+
+async function loadDormancyTable() {
+  const params = new URLSearchParams({ status: dStatus, limit: PAGE_SIZE, offset: dOffset });
+  if ($("#d-region").value) params.set("region", $("#d-region").value);
+  const { total, customers } = await api(`/api/dormancy/customers?${params}`);
+
+  const going = dStatus === "going";
+  $("#d-head").innerHTML = `<th>Customer</th><th>Region</th><th>Days idle</th><th>Txns (90d)</th><th>Balance</th>
+    <th>${going ? "Going dormant" : "Days past rule"}</th><th>Churn risk</th><th>Main reason</th>`;
+  $("#d-rows").innerHTML = customers.length
+    ? customers.map((c) => `
+        <tr data-id="${c.customer_id}">
+          <td><strong>${c.customer_id}</strong></td>
+          <td>${esc(c.region)}</td>
+          <td>${c.days_since_last_txn}</td>
+          <td>${c.total_txn_count_90d}</td>
+          <td>${fmtMoney(c.balance)}</td>
+          <td>${going ? `${riskPill(c.dormancy_band)} <span class="muted">${fmtPct(c.dormancy_probability)}</span>`
+                      : `<span class="pill dormant">${c.days_since_last_txn - 90} days</span>`}</td>
+          <td>${riskPill(c.risk_band)}</td>
+          <td class="reason">${esc((c.dormancy_reasons || [])[going ? 0 : 1] ?? (c.dormancy_reasons || [])[0] ?? "")}</td>
+        </tr>`).join("")
+    : `<tr class="empty-row"><td colspan="8">${going ? "No active customers scored for dormancy yet" : "No dormant customers yet"}</td></tr>`;
+
+  const end = Math.min(dOffset + PAGE_SIZE, total);
+  $("#d-page-info").textContent = total ? `${dOffset + 1}–${end} of ${fmtInt(total)}` : "";
+  $("#d-prev").disabled = dOffset === 0;
+  $("#d-next").disabled = end >= total;
+}
+
+document.querySelectorAll(".seg").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".seg").forEach((x) => x.classList.toggle("active", x === b));
+  dStatus = b.dataset.dstatus;
+  dOffset = 0;
+  loadDormancyTable().catch(showError);
+}));
+$("#d-region").addEventListener("change", () => { dOffset = 0; loadDormancyTable().catch(showError); });
+$("#d-prev").addEventListener("click", () => { dOffset = Math.max(0, dOffset - PAGE_SIZE); loadDormancyTable().catch(showError); });
+$("#d-next").addEventListener("click", () => { dOffset += PAGE_SIZE; loadDormancyTable().catch(showError); });
 
 // =====================================================================
 // LIVE REFRESH LOOP
@@ -358,6 +470,7 @@ async function refreshAll() {
     const s = await loadSummary();
     await Promise.all([loadTrends(), loadBreakdown(), loadTopRisk()]);
     if ($("#view-customers").classList.contains("active")) await loadCustomers();
+    if ($("#view-dormancy").classList.contains("active")) await loadDormancy();
     $("#live-dot").className = "dot ok";
     const last = s.last_customer_at ? `last customer ${fmtTime(s.last_customer_at)}` : "no live customers yet";
     $("#status-text").textContent = `Live · updated ${fmtTime(new Date().toISOString())} · ${last}`;

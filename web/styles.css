@@ -210,10 +210,19 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--brand
 .chip.on { background: color-mix(in srgb, var(--brand) 14%, transparent); border-color: var(--brand); color: var(--brand); }
 .chip.off { color: var(--muted); text-decoration: line-through; }
 
+/* ---------- Dormancy page ---------- */
+.rule { margin: 0 0 16px; }
+.grid.two.even { grid-template-columns: 1fr 1fr; }
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: .85rem; padding: 7px 14px; cursor: pointer; }
+.seg.active { background: var(--brand); color: var(--brand-ink); font-weight: 600; }
+.reason { color: var(--muted); font-size: .82rem; white-space: normal; min-width: 220px; }
+.pill.dormant { color: var(--high); background: color-mix(in srgb, var(--high) 12%, transparent); }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1000px) {
   .kpis { grid-template-columns: repeat(2, 1fr); }
-  .grid.two, #view-whatif .grid.two, #view-overview .grid.two:last-child { grid-template-columns: 1fr; }
+  .grid.two, .grid.two.even, #view-whatif .grid.two, #view-overview .grid.two:last-child { grid-template-columns: 1fr; }
   .model-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 560px) {

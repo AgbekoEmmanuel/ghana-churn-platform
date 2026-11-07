@@ -1,6 +1,6 @@
 """
-Phase 5 - scorer.py  (automated ML scoring loop)
-================================================
+Phase 5/8 - scorer.py  (automated ML scoring loop: churn + dormancy)
+====================================================================
 Runs in the background next to the simulator. Every few seconds it:
   1. Finds new customers that have not been scored yet (scored_at IS NULL).
   2. Feeds them to the saved model (models/churn_model.pkl).
@@ -9,6 +9,10 @@ Runs in the background next to the simulator. Every few seconds it:
         risk_band          'low' / 'medium' / 'high'
         model_version      which model made the prediction (for auditing)
         scored_at          when it was scored
+     and, if models/dormancy_model.pkl exists (Phase 8):
+        dormancy_status       'dormant' if no activity for 90+ days, else 'active'  (a RULE)
+        dormancy_probability  chance an ACTIVE customer goes dormant in 90 days (the MODEL)
+        dormancy_band         'low' / 'medium' / 'high'
 Then it sleeps and repeats.
 
 Extra features:
@@ -39,6 +43,8 @@ from dotenv import load_dotenv
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = PROJECT_DIR / "models" / "churn_model.pkl"
+DORMANCY_PATH = PROJECT_DIR / "models" / "dormancy_model.pkl"
+DORMANT_AFTER_DAYS = 90       # business rule: 3 months with no activity of any kind
 load_dotenv(PROJECT_DIR / ".env")
 DATABASE_URL = os.getenv("DATABASE_URL")
 BATCH_LIMIT = 500          # score at most this many rows per round
@@ -50,15 +56,18 @@ BATCH_LIMIT = 500          # score at most this many rows per round
 class ModelHolder:
     """Keeps the model in memory and reloads it if the .pkl file changes."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, required: bool = True):
         self.path = path
+        self.required = required
         self.mtime = None
         self.bundle = None
         self.reload_if_changed()
 
     def reload_if_changed(self):
         if not self.path.exists():
-            raise SystemExit("models/churn_model.pkl not found. Run train_model.py first (Phase 3).")
+            if self.required:
+                raise SystemExit(f"models/{self.path.name} not found. Train it first.")
+            return                                   # optional model not trained yet
         mtime = self.path.stat().st_mtime          # last-modified time of the file
         if mtime != self.mtime:
             self.bundle = joblib.load(self.path)
@@ -89,8 +98,10 @@ def risk_band(p: float, threshold: float) -> str:
 # ---------------------------------------------------------------------
 # One scoring round
 # ---------------------------------------------------------------------
-def score_once(conn, model: ModelHolder, include_history: bool) -> int:
-    features = model.bundle["features"]
+def score_once(conn, model: ModelHolder, dormancy: ModelHolder, include_history: bool) -> int:
+    features = list(model.bundle["features"])
+    if dormancy.bundle:                              # add any extra columns the dormancy model needs
+        features += [f for f in dormancy.bundle["features"] if f not in features]
     where = "scored_at IS NULL" + ("" if include_history else " AND data_source = 'simulator'")
 
     with conn, conn.cursor() as cur:               # one transaction per round
@@ -114,26 +125,47 @@ def score_once(conn, model: ModelHolder, include_history: bool) -> int:
                 df[c] = pd.to_numeric(df[c])
 
         # The saved pipeline does all preprocessing (one-hot etc.) itself.
-        proba = model.bundle["pipeline"].predict_proba(df[features])[:, 1]
+        proba = model.bundle["pipeline"].predict_proba(df[model.bundle["features"]])[:, 1]
+
+        # Dormancy: a RULE for who is dormant now, the MODEL for who is drifting.
+        is_dormant = (df["days_since_last_txn"] >= DORMANT_AFTER_DAYS).to_numpy()
+        if dormancy.bundle:
+            d_proba = dormancy.bundle["pipeline"].predict_proba(df[dormancy.bundle["features"]])[:, 1]
+        else:
+            d_proba = [None] * len(df)
 
         version = model.bundle["model_version"]
-        updates = [(int(i), round(float(p), 4), risk_band(p, model.threshold), version)
-                   for i, p in zip(df["id"], proba)]
+        updates = []
+        for i, p, dormant, dp in zip(df["id"], proba, is_dormant, d_proba):
+            if dormant:
+                d_status, d_p, d_band = "dormant", None, None        # already dormant: nothing to predict
+            elif dp is None:
+                d_status, d_p, d_band = "active", None, None        # dormancy model not trained yet
+            else:
+                d_status, d_p, d_band = "active", round(float(dp), 4), risk_band(dp, dormancy.threshold)
+            updates.append((int(i), round(float(p), 4), risk_band(p, model.threshold), version,
+                            d_status, d_p, d_band))
 
         # Update many rows in one statement by joining to a VALUES list.
         execute_values(cur, """
             UPDATE bank_customers AS b
-            SET churn_probability = v.p::numeric,
-                risk_band        = v.band,
-                model_version    = v.ver,
-                scored_at        = NOW()
-            FROM (VALUES %s) AS v(id, p, band, ver)
+            SET churn_probability    = v.p::numeric,
+                risk_band            = v.band,
+                model_version        = v.ver,
+                dormancy_status      = v.d_status,
+                dormancy_probability = v.d_p::numeric,
+                dormancy_band        = v.d_band,
+                scored_at            = NOW()
+            FROM (VALUES %s) AS v(id, p, band, ver, d_status, d_p, d_band)
             WHERE b.id = v.id
         """, updates)
 
     bands = pd.Series([u[2] for u in updates]).value_counts()
-    print(f"[{datetime.now():%H:%M:%S}] scored {len(updates):>3}  "
-          f"high {bands.get('high', 0):>3} | medium {bands.get('medium', 0):>3} | low {bands.get('low', 0):>3}")
+    dormant_now = sum(u[4] == "dormant" for u in updates)
+    drifting = sum(u[6] == "high" for u in updates)
+    print(f"[{datetime.now():%H:%M:%S}] scored {len(updates):>4}  churn high {bands.get('high', 0):>3} | "
+          f"medium {bands.get('medium', 0):>3} | low {bands.get('low', 0):>3}  || "
+          f"dormant {dormant_now:>3} | going dormant (high) {drifting:>3}")
     return len(updates)
 
 
@@ -148,6 +180,9 @@ def main():
     args = parser.parse_args()
 
     model = ModelHolder(MODEL_PATH)
+    dormancy = ModelHolder(DORMANCY_PATH, required=False)
+    if not dormancy.bundle:
+        print("Note: models/dormancy_model.pkl not found, so only churn is scored.")
     conn = psycopg2.connect(DATABASE_URL)
     print(f"Scorer running. Checking every {args.interval}s. Ctrl+C to stop.\n")
 
@@ -155,7 +190,8 @@ def main():
         while True:
             try:
                 model.reload_if_changed()
-                n = score_once(conn, model, args.include_history)
+                dormancy.reload_if_changed()
+                n = score_once(conn, model, dormancy, args.include_history)
                 # If a full batch came back there may be more waiting: go again at once.
                 if n == BATCH_LIMIT:
                     continue

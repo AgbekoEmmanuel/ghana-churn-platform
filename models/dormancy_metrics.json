@@ -1,0 +1,96 @@
+{
+  "threshold": 0.28,
+  "features": [
+    "credit_score",
+    "age",
+    "tenure",
+    "balance",
+    "products_number",
+    "credit_card",
+    "active_member",
+    "estimated_salary",
+    "uses_mobile_app",
+    "uses_ussd",
+    "uses_internet_banking",
+    "momo_linked",
+    "failed_txn_count_90d",
+    "days_since_last_txn",
+    "branch_visits_90d",
+    "atm_withdrawals_90d",
+    "total_txn_count_90d",
+    "salary_credited",
+    "complaints_90d",
+    "balance_change_3m_pct",
+    "country",
+    "region",
+    "primary_channel"
+  ],
+  "model_name": "Logistic Regression (calibrated)",
+  "model_version": "dorm-v1-20261107-093145",
+  "metrics": {
+    "roc_auc": 0.7815,
+    "pr_auc": 0.4829,
+    "precision": 0.4405,
+    "recall": 0.5929,
+    "brier": 0.1302,
+    "confusion_matrix": {
+      "tn": 1306,
+      "fp": 296,
+      "fn": 160,
+      "tp": 233
+    }
+  },
+  "drivers": [
+    {
+      "feature": "total_txn_count_90d",
+      "label": "Transactions in 90 days",
+      "importance": 0.2953
+    },
+    {
+      "feature": "active_member",
+      "label": "Active member flag",
+      "importance": 0.2795
+    },
+    {
+      "feature": "salary_credited",
+      "label": "Salary paid into account",
+      "importance": 0.1593
+    },
+    {
+      "feature": "days_since_last_txn",
+      "label": "Days since last activity",
+      "importance": 0.0992
+    },
+    {
+      "feature": "balance_change_3m_pct",
+      "label": "Balance trend (3 months)",
+      "importance": 0.0528
+    },
+    {
+      "feature": "uses_mobile_app",
+      "label": "Uses mobile app",
+      "importance": 0.0488
+    },
+    {
+      "feature": "products_number",
+      "label": "Number of products",
+      "importance": 0.0221
+    },
+    {
+      "feature": "momo_linked",
+      "label": "MoMo linked",
+      "importance": 0.015
+    },
+    {
+      "feature": "age",
+      "label": "Age",
+      "importance": 0.0071
+    },
+    {
+      "feature": "complaints_90d",
+      "label": "Complaints",
+      "importance": 0.0064
+    }
+  ],
+  "trained_at": "2026-11-07T09:31:45.821943+00:00"
+}

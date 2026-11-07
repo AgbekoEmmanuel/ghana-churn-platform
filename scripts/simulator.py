@@ -1,6 +1,6 @@
 """
-Phase 4 - simulator.py  ("data-aware" live customer generator)
-==============================================================
+Phase 4/8 - simulator.py  ("data-aware" live customer generator + ageing)
+==========================================================================
 Pretends to be the bank's core system: every few seconds it creates a few
 NEW, realistic customers and writes them into Neon, where the scoring
 script (Phase 5) and the web platform (Phase 6) will pick them up.
@@ -15,6 +15,15 @@ How it stays realistic ("data-aware"):
      SAME rules as Phase 2 (imported from load_baseline.py), so live data
      looks like the training data.
 
+Ageing (Phase 8 - dormancy):
+  Every round also moves the clock forward by one SIMULATED DAY (--days-per-run)
+  for every live customer. Each customer either does something that day
+  (days_since_last_txn resets to 0) or stays quiet (+1 day). Customers who are
+  secretly "drifting away" get quieter and quieter until they pass 90 idle days
+  and become DORMANT. Changed customers are queued for re-scoring.
+  With a run every 5 minutes, one simulated day passes every 5 minutes, so
+  dormancy shows up on the platform within hours instead of months.
+
 The hidden future:
   Each new customer secretly "will" or "won't" churn (copied from the
   template, with some randomness). That hidden outcome shapes their
@@ -26,6 +35,7 @@ Run (venv active):
     python scripts\\simulator.py                  # 1-3 customers every 5 seconds, forever
     python scripts\\simulator.py --interval 2 --batch 5
     python scripts\\simulator.py --max-batches 3  # quick test: 3 rounds then stop
+    python scripts\\simulator.py --days-per-run 0  # turn ageing off
 Stop it any time with Ctrl+C.
 """
 
@@ -51,9 +61,11 @@ BASE_COLUMNS = ["credit_score", "country", "age", "tenure", "balance",
                 "products_number", "credit_card", "active_member",
                 "estimated_salary", "churn"]
 
-# Columns we write for each simulated customer. Note: no 'churn' (unknown
-# future) and no 'gender' (we decided not to use it).
-INSERT_COLUMNS = [c for c in lb.INSERT_COLUMNS if c not in ("churn", "gender")]
+# Columns we write for each simulated customer. Not written: 'churn' and
+# 'went_dormant_90d' (unknown future) and 'gender' (we decided not to use it).
+# Added: the two hidden sim_ columns that drive ageing.
+INSERT_COLUMNS = [c for c in lb.INSERT_COLUMNS if c not in ("churn", "gender", "went_dormant_90d")] \
+                 + ["sim_activity_prob", "sim_goes_dormant"]
 
 
 # ---------------------------------------------------------------------
@@ -106,7 +118,53 @@ def make_customers(templates: pd.DataFrame, n: int, first_id: int) -> pd.DataFra
     # Same Ghana + 360 rules as Phase 2. They use the hidden 'churn' to shape behaviour.
     df = lb.add_ghana_features(df)
     df = lb.add_activity_features(df)
+
+    # Hidden dormancy behaviour (never shown to the model).
+    already_dormant = df["days_since_last_txn"].to_numpy() >= lb.DORMANT_AFTER_DAYS
+    drifting = rng.random(n) < lb.dormancy_propensity(df)
+    df["sim_goes_dormant"] = already_dormant | drifting
+    df["sim_activity_prob"] = np.where(already_dormant, 0.01, lb.daily_activity_prob(df)).round(4)
     return df
+
+
+# ---------------------------------------------------------------------
+# 2b. Age existing customers by N simulated days (Phase 8)
+# ---------------------------------------------------------------------
+AGE_SQL = """
+WITH today AS (                       -- roll the dice once per customer
+    SELECT id, random() < sim_activity_prob AS did_something
+    FROM bank_customers
+    WHERE data_source = 'simulator' AND sim_activity_prob IS NOT NULL
+)
+UPDATE bank_customers AS b SET
+    -- any activity resets the idle counter; otherwise it grows
+    days_since_last_txn = CASE WHEN t.did_something THEN 0
+                               ELSE b.days_since_last_txn + %(days)s END,
+    -- 90-day activity counts: +1 when active, wiped once idle for 90+ days
+    total_txn_count_90d = CASE WHEN t.did_something THEN LEAST(b.total_txn_count_90d + 1, 300)
+                               WHEN b.days_since_last_txn + %(days)s >= 90 THEN 0
+                               ELSE b.total_txn_count_90d END,
+    branch_visits_90d   = CASE WHEN NOT t.did_something AND b.days_since_last_txn + %(days)s >= 90 THEN 0
+                               ELSE b.branch_visits_90d END,
+    atm_withdrawals_90d = CASE WHEN NOT t.did_something AND b.days_since_last_txn + %(days)s >= 90 THEN 0
+                               ELSE b.atm_withdrawals_90d END,
+    -- customers drifting away get quieter every day
+    sim_activity_prob   = CASE WHEN b.sim_goes_dormant
+                               THEN GREATEST(b.sim_activity_prob * power(0.8, %(days)s), 0.002)
+                               ELSE b.sim_activity_prob END,
+    scored_at = NULL                  -- features changed -> score again
+FROM today AS t
+WHERE b.id = t.id
+"""
+
+
+def age_customers(conn, days: int) -> int:
+    """Move every live customer forward by `days` simulated days. Returns rows changed."""
+    if days <= 0:
+        return 0
+    with conn, conn.cursor() as cur:
+        cur.execute(AGE_SQL, {"days": days})
+        return cur.rowcount
 
 
 # ---------------------------------------------------------------------
@@ -114,7 +172,8 @@ def make_customers(templates: pd.DataFrame, n: int, first_id: int) -> pd.DataFra
 # ---------------------------------------------------------------------
 def insert_customers(conn, df: pd.DataFrame):
     rows = [
-        tuple(v.item() if hasattr(v, "item") else v for v in rec) + ("simulator", True)
+        tuple(None if pd.isna(v) else (v.item() if hasattr(v, "item") else v) for v in rec)
+        + ("simulator", True)
         for rec in df[INSERT_COLUMNS].itertuples(index=False)
     ]
     sql = f"""
@@ -130,9 +189,10 @@ def insert_customers(conn, df: pd.DataFrame):
 # ---------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Stream simulated bank customers into Neon")
-    parser.add_argument("--interval", type=float, default=300, help="seconds between batches (default 300)")
+    parser.add_argument("--interval", type=float, default=5, help="seconds between batches (default 5)")
     parser.add_argument("--batch", type=int, default=3, help="max customers per batch (default 3)")
     parser.add_argument("--max-batches", type=int, default=0, help="stop after N batches (0 = run forever)")
+    parser.add_argument("--days-per-run", type=int, default=1, help="simulated days that pass each round (0 = no ageing)")
     args = parser.parse_args()
 
     conn = psycopg2.connect(lb.DATABASE_URL)
@@ -143,6 +203,7 @@ def main():
     try:
         while True:
             try:
+                aged = age_customers(conn, args.days_per_run)    # existing customers get older first
                 n = int(rng.integers(1, args.batch + 1))          # 1..batch customers this round
                 new = make_customers(templates, n, next_customer_id(conn))
                 insert_customers(conn, new)
@@ -150,7 +211,8 @@ def main():
                 total += n
                 ids = f"{new.customer_id.iloc[0]}-{new.customer_id.iloc[-1]}" if n > 1 else str(new.customer_id.iloc[0])
                 print(f"[{datetime.now():%H:%M:%S}] +{n} customer(s)  ids {ids}  "
-                      f"(total this run: {total})")
+                      f"(total this run: {total})"
+                      + (f"  | aged {aged} customers by {args.days_per_run} day(s)" if aged else ""))
             except psycopg2.OperationalError as e:
                 # Wi-Fi blip or Neon waking up: reconnect and carry on.
                 print(f"Connection problem ({str(e).strip()[:60]}...). Reconnecting in 5s.")

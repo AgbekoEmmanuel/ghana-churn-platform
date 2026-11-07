@@ -30,6 +30,7 @@
 <nav class="tabs" role="tablist">
   <button class="tab active" data-view="overview">Overview</button>
   <button class="tab" data-view="customers">Customers</button>
+  <button class="tab" data-view="dormancy">Dormancy</button>
   <button class="tab" data-view="whatif">What-if</button>
   <button class="tab" data-view="model">Model</button>
 </nav>
@@ -115,6 +116,50 @@
     </div>
   </section>
 
+  <!-- ================= DORMANCY ================= -->
+  <section id="view-dormancy" class="view">
+    <p class="muted rule">Rule: an account is <strong>dormant</strong> after <strong>90 days</strong> with no activity of any kind
+      (deposit, withdrawal, transfer, balance check, login). "Going dormant" is the model's early warning for active customers.</p>
+    <div class="kpis">
+      <div class="kpi danger"><span class="kpi-label">Dormant now</span><span class="kpi-value" id="d-dormant">–</span><span class="kpi-sub" id="d-dormant-sub">–</span></div>
+      <div class="kpi warn"><span class="kpi-label">Idle balance (dormant)</span><span class="kpi-value" id="d-dormant-bal">–</span><span class="kpi-sub">sitting in dormant accounts</span></div>
+      <div class="kpi"><span class="kpi-label">Going dormant (high)</span><span class="kpi-value" id="d-going">–</span><span class="kpi-sub" id="d-going-sub">–</span></div>
+      <div class="kpi"><span class="kpi-label">Balance at risk of going idle</span><span class="kpi-value" id="d-going-bal">–</span><span class="kpi-sub">held by high-risk active customers</span></div>
+    </div>
+
+    <div class="grid two even">
+      <div class="card">
+        <div class="card-head"><h2>Why customers go dormant</h2><span class="muted">model drivers</span></div>
+        <div class="chart-box"><canvas id="drivers-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>How long customers have been idle</h2></div>
+        <div class="chart-box"><canvas id="idle-chart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="segmented" role="group">
+          <button class="seg active" data-dstatus="going">Going dormant</button>
+          <button class="seg" data-dstatus="dormant">Already dormant</button>
+        </div>
+        <select id="d-region"><option value="">All regions</option></select>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr id="d-head"></tr></thead>
+          <tbody id="d-rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="d-prev" class="btn ghost">← Prev</button>
+        <span id="d-page-info" class="muted"></span>
+        <button id="d-next" class="btn ghost">Next →</button>
+      </div>
+    </div>
+  </section>
+
   <!-- ================= WHAT-IF ================= -->
   <section id="view-whatif" class="view">
     <div class="grid two">
@@ -164,13 +209,18 @@
   <!-- ================= MODEL ================= -->
   <section id="view-model" class="view">
     <div class="card">
-      <div class="card-head"><h2>Model in production</h2></div>
+      <div class="card-head"><h2>Churn model in production</h2></div>
       <div id="model-info" class="model-grid"></div>
       <p class="muted note">
         Scores come from the test set (2,000 customers the model never saw in training).
         "Kaggle-only ROC-AUC" shows what the real columns achieve alone. The extra lift comes from the synthetic
         Ghana &amp; 360 features, so it reflects our simulation assumptions, not proven Ghanaian behaviour.
       </p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><h2>Dormancy model</h2><span class="muted">predicts going dormant in the next 90 days</span></div>
+      <div id="dormancy-model-info" class="model-grid"></div>
+      <p class="muted note">The "went dormant" history used for training is synthetic, so these scores reflect our simulation assumptions.</p>
     </div>
   </section>
 </main>

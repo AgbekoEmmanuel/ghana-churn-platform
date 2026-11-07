@@ -11,7 +11,11 @@ Endpoints (all return JSON):
   GET  /api/customers/{id}         the customer 360 view + warning signs
   GET  /api/trends                 arrivals and average risk over time (live chart)
   GET  /api/breakdown/{dimension}  risk by region / primary_channel / country / products
-  GET  /api/model                  model name, version, test-set metrics
+  GET  /api/model                  model name, version, test-set metrics (churn + dormancy)
+  GET  /api/dormancy/summary        dormant now, idle balances, customers going dormant
+  GET  /api/dormancy/customers      ?status=dormant (already) or ?status=going (at risk)
+  GET  /api/dormancy/drivers        the factors that push customers into dormancy
+  GET  /api/dormancy/idle-buckets   how long customers have been idle
   POST /api/score                  "what-if": score a customer you type in
 
 Run from the project folder (venv active):
@@ -39,6 +43,8 @@ from pydantic import BaseModel, Field
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = PROJECT_DIR / "models" / "churn_model.pkl"
+DORMANCY_PATH = PROJECT_DIR / "models" / "dormancy_model.pkl"
+DORMANT_AFTER_DAYS = 90                       # business rule: 3 months with no activity
 WEB_DIR = PROJECT_DIR / "web"
 load_dotenv(PROJECT_DIR / ".env")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -116,23 +122,66 @@ def get_model():
     return _model["bundle"]
 
 
+_dormancy = {"mtime": None, "bundle": None}
+
+
+def get_dormancy_model():
+    """The dormancy model is optional: returns None until it has been trained."""
+    if not DORMANCY_PATH.exists():
+        return None
+    mtime = DORMANCY_PATH.stat().st_mtime
+    if mtime != _dormancy["mtime"]:
+        _dormancy["bundle"] = joblib.load(DORMANCY_PATH)
+        _dormancy["mtime"] = mtime
+    return _dormancy["bundle"]
+
+
 # ---------------------------------------------------------------------
 # Business rules shown on the platform
 # ---------------------------------------------------------------------
 def lifecycle_stage(c: dict) -> str:
     """
-    Dormancy is the EARLY warning, churn is the end result.
-    Active -> Slowing -> Dormant risk -> Likely to churn
+    One label a branch manager can read at a glance:
+      Dormant          no activity of any kind for 90+ days (the bank's rule)
+      Likely to churn  churn model says high risk
+      Going dormant    dormancy model says high risk of going dormant in 90 days
+      Slowing          quiet for 30+ days or very few transactions
+      Active           everything looks normal
     """
-    if c.get("risk_band") == "high":
-        return "Likely to churn"
     days = c.get("days_since_last_txn") or 0
     txns = c.get("total_txn_count_90d") or 0
-    if days > 60:
-        return "Dormant risk"
+    if days >= DORMANT_AFTER_DAYS:
+        return "Dormant"
+    if c.get("risk_band") == "high":
+        return "Likely to churn"
+    if c.get("dormancy_band") == "high":
+        return "Going dormant"
     if days > 30 or txns < 6:
         return "Slowing"
     return "Active"
+
+
+def dormancy_reasons(c: dict, norms: dict) -> list:
+    """Plain-English reasons a customer is (or may become) dormant."""
+    reasons = []
+    days = c.get("days_since_last_txn") or 0
+    if days >= DORMANT_AFTER_DAYS:
+        reasons.append(f"Dormant: no activity of any kind for {days} days "
+                       f"({days - DORMANT_AFTER_DAYS} days past the 90-day rule)")
+    elif days > 30:
+        reasons.append(f"Quiet for {days} days: dormant in {DORMANT_AFTER_DAYS - days} more days if nothing happens")
+    if (c.get("total_txn_count_90d") or 0) < norms["total_txn_count_90d"] / 2:
+        reasons.append(f"Low activity: {c.get('total_txn_count_90d')} transactions in 90 days "
+                       f"(typical: {norms['total_txn_count_90d']:.0f})")
+    if c.get("salary_credited") == 0:
+        reasons.append("No salary coming into the account")
+    if c.get("uses_mobile_app") == 0 and c.get("momo_linked") == 0:
+        reasons.append("No mobile app and no MoMo link, so no easy way to transact")
+    if c.get("active_member") == 0:
+        reasons.append("Flagged as an inactive member")
+    if (c.get("balance_change_3m_pct") or 0) <= -10:
+        reasons.append(f"Balance fell {abs(c['balance_change_3m_pct']):.0f}% in 3 months")
+    return reasons
 
 
 def warning_signs(c: dict, norms: dict) -> list:
@@ -214,7 +263,8 @@ def summary():
 
 LIST_COLUMNS = """customer_id, age, region, country, primary_channel, products_number,
                   balance, total_txn_count_90d, days_since_last_txn, failed_txn_count_90d,
-                  complaints_90d, churn_probability, risk_band, created_at, scored_at"""
+                  complaints_90d, churn_probability, risk_band, created_at, scored_at,
+                  dormancy_status, dormancy_probability, dormancy_band"""
 
 
 @app.get("/api/customers")
@@ -257,7 +307,11 @@ def customer_360(customer_id: int):
     if not rows:
         raise HTTPException(404, "Customer not found")
     c = rows[0]
-    c.pop("gender", None)                     # not used anywhere on the platform
+    # Hide columns that must never reach the screen: gender (not used), the
+    # training label, and the simulator's hidden "future" (that would be cheating).
+    for hidden in ("gender", "went_dormant_90d", "sim_activity_prob", "sim_goes_dormant", "churn"):
+        c.pop(hidden, None)
+    c["dormancy_reasons"] = dormancy_reasons(c, get_norms())
     c["lifecycle_stage"] = lifecycle_stage(c)
     c["warning_signs"] = warning_signs(c, get_norms())
     c["channels"] = {
@@ -307,8 +361,87 @@ def breakdown(dimension: Literal["region", "primary_channel", "country", "produc
 
 @app.get("/api/model")
 def model_info():
+    keys = ("model_name", "model_version", "threshold", "metrics", "trained_at", "features")
     b = get_model()
-    return {k: b[k] for k in ("model_name", "model_version", "threshold", "metrics", "trained_at", "features")}
+    out = {k: b[k] for k in keys}
+    d = get_dormancy_model()
+    out["dormancy"] = {k: d[k] for k in keys + ("drivers",)} if d else None
+    return out
+
+
+# ---------------------------------------------------------------------
+# Dormancy (Phase 8)
+# ---------------------------------------------------------------------
+@app.get("/api/dormancy/summary")
+def dormancy_summary():
+    return query("""
+        SELECT COUNT(*) FILTER (WHERE days_since_last_txn >= 90)                    AS dormant,
+               COALESCE(SUM(balance) FILTER (WHERE days_since_last_txn >= 90), 0)   AS dormant_balance,
+               ROUND(AVG(days_since_last_txn) FILTER (WHERE days_since_last_txn >= 90)) AS avg_days_idle_dormant,
+               COUNT(*) FILTER (WHERE days_since_last_txn < 90)                     AS active,
+               COUNT(*) FILTER (WHERE dormancy_band = 'high')                       AS going_dormant_high,
+               COUNT(*) FILTER (WHERE dormancy_band = 'medium')                     AS going_dormant_medium,
+               COALESCE(SUM(balance) FILTER (WHERE dormancy_band = 'high'), 0)      AS going_dormant_balance,
+               ROUND(AVG(dormancy_probability), 4)                                  AS avg_dormancy_probability,
+               COUNT(*)                                                             AS live_customers
+        FROM bank_customers
+        WHERE data_source = 'simulator'
+    """)[0] | {"model_trained": get_dormancy_model() is not None}
+
+
+@app.get("/api/dormancy/customers")
+def dormancy_customers(
+    status: Literal["dormant", "going"] = "going",
+    region: Optional[str] = None,
+    limit: int = Query(25, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """status=dormant: already dormant, longest idle first.
+       status=going: still active, highest chance of going dormant first."""
+    where, params = ["data_source = 'simulator'"], []
+    if status == "dormant":
+        where.append("days_since_last_txn >= 90")
+        order = "days_since_last_txn DESC, balance DESC"
+    else:
+        where.append("days_since_last_txn < 90 AND dormancy_probability IS NOT NULL")
+        order = "dormancy_probability DESC"
+    if region:
+        where.append("region = %s")
+        params.append(region)
+    where_sql = " AND ".join(where)
+    total = query(f"SELECT COUNT(*) AS n FROM bank_customers WHERE {where_sql}", params)[0]["n"]
+    rows = query(f"""
+        SELECT {LIST_COLUMNS}, salary_credited, uses_mobile_app, momo_linked, active_member,
+               balance_change_3m_pct
+        FROM bank_customers WHERE {where_sql} ORDER BY {order} LIMIT %s OFFSET %s
+    """, params + [limit, offset])
+    norms = get_norms()
+    for r in rows:
+        r["lifecycle_stage"] = lifecycle_stage(r)
+        r["dormancy_reasons"] = dormancy_reasons(r, norms)
+    return {"total": total, "limit": limit, "offset": offset, "customers": rows}
+
+
+@app.get("/api/dormancy/drivers")
+def dormancy_drivers():
+    d = get_dormancy_model()
+    if not d:
+        raise HTTPException(404, "Dormancy model not trained yet. Run scripts/train_dormancy_model.py")
+    return d["drivers"]
+
+
+@app.get("/api/dormancy/idle-buckets")
+def idle_buckets():
+    """How long live customers have been idle, in bands (for a bar chart)."""
+    return query("""
+        SELECT label, COUNT(b.id) AS customers
+        FROM (VALUES (1, '0-7 days', 0, 7), (2, '8-30 days', 8, 30), (3, '31-60 days', 31, 60),
+                     (4, '61-89 days', 61, 89), (5, '90-180 days (dormant)', 90, 180),
+                     (6, '181+ days (dormant)', 181, 100000)) AS v(ord, label, lo, hi)
+        LEFT JOIN bank_customers b
+               ON b.data_source = 'simulator' AND b.days_since_last_txn BETWEEN v.lo AND v.hi
+        GROUP BY v.ord, label ORDER BY v.ord
+    """)
 
 
 class WhatIfCustomer(BaseModel):
@@ -348,9 +481,23 @@ def score(customer: WhatIfCustomer):
     t = b["threshold"]
     band = "high" if p >= t else "medium" if p >= t / 2 else "low"
     row.update({"risk_band": band})
+
+    # Dormancy: rule first (already dormant?), then the model for active customers.
+    d = get_dormancy_model()
+    d_prob = d_band = None
+    if row["days_since_last_txn"] < DORMANT_AFTER_DAYS and d:
+        d_prob = float(d["pipeline"].predict_proba(pd.DataFrame([row])[d["features"]])[:, 1][0])
+        dt = d["threshold"]
+        d_band = "high" if d_prob >= dt else "medium" if d_prob >= dt / 2 else "low"
+    row["dormancy_band"] = d_band
+    norms = get_norms()
     return {"churn_probability": round(p, 4), "risk_band": band,
+            "dormancy_status": "dormant" if row["days_since_last_txn"] >= DORMANT_AFTER_DAYS else "active",
+            "dormancy_probability": None if d_prob is None else round(d_prob, 4),
+            "dormancy_band": d_band,
             "lifecycle_stage": lifecycle_stage(row),
-            "warning_signs": warning_signs(row, get_norms()),
+            "warning_signs": warning_signs(row, norms),
+            "dormancy_reasons": dormancy_reasons(row, norms),
             "model_version": b["model_version"]}
 
 
