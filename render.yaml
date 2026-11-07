@@ -1,0 +1,23 @@
+# =====================================================================
+# Phase 7b - Render "Blueprint": puts the API + web platform online.
+# Render reads this file from your GitHub repo and builds a web server:
+#   1. installs the libraries from requirements.txt
+#   2. starts uvicorn (the same server you run on your laptop)
+# The Neon connection string is NOT in here. Render asks you for it
+# once, and keeps it secret (like the GitHub secret in Phase 7a).
+# =====================================================================
+services:
+  - type: web
+    name: ghana-churn-platform        # becomes https://ghana-churn-platform.onrender.com (if the name is free)
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # $PORT is chosen by Render; 0.0.0.0 means "accept visitors from the internet"
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health      # Render checks this to know the site is up
+    autoDeploy: true                  # every push to GitHub updates the website
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9                 # same Python as your laptop
+      - key: DATABASE_URL
+        sync: false                   # Render will ASK you for this value (kept secret)
