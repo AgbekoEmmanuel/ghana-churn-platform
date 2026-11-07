@@ -11,7 +11,7 @@
 // ---------- Settings ----------
 // If the page is served by FastAPI itself (http://127.0.0.1:8000), use the same
 // address. If it's opened another way (e.g. VS Code Live Server), point at port 8000.
-const API = location.port === "8000" ? "" : "http://127.0.0.1:8000";
+const API = (location.protocol === "file:" || location.port === "5500") ? "http://127.0.0.1:8000" : "";
 const REFRESH_MS = 60 * 1000;      // refresh every 60 s (the simulator adds data every 5 min)
 const PAGE_SIZE = 25;
 
