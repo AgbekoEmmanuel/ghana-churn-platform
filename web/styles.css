@@ -140,6 +140,9 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--brand
 
 .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .filters input[type=search] { flex: 1 1 200px; }
+.date-range { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.date-range[hidden] { display: none; }
+.date-range label { color: var(--muted); font-size: 0.85rem; }
 
 /* ---------- Tables ---------- */
 .table-wrap { overflow-x: auto; }

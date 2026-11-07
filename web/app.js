@@ -11,6 +11,8 @@
 // ---------- Settings ----------
 // If the page is served by FastAPI itself (http://127.0.0.1:8000), use the same
 // address. If it's opened another way (e.g. VS Code Live Server), point at port 8000.
+// Same server that sent the page (laptop :8000 or Render). Only when the page is
+// opened as a file or from VS Code Live Server do we point at the laptop API.
 const API = (location.protocol === "file:" || location.port === "5500") ? "http://127.0.0.1:8000" : "";
 const REFRESH_MS = 60 * 1000;      // refresh every 60 s (the simulator adds data every 5 min)
 const PAGE_SIZE = 25;
@@ -190,12 +192,16 @@ async function loadCustomers() {
   if ($("#f-risk").value) params.set("risk", $("#f-risk").value);
   if ($("#f-region").value) params.set("region", $("#f-region").value);
   if ($("#f-search").value.trim()) params.set("search", $("#f-search").value.trim());
+  const { from, to } = joinedRange();
+  if (from) params.set("joined_from", from);
+  if (to) params.set("joined_to", to);
 
   const { total, customers } = await api(`/api/customers?${params}`);
   $("#cust-rows").innerHTML = customers.length
     ? customers.map((c) => `
         <tr data-id="${c.customer_id}">
           <td><strong>${c.customer_id}</strong></td>
+          <td>${fmtJoined(c.joined_on)}</td>
           <td>${c.age}</td>
           <td>${esc(c.region)}</td>
           <td>${esc(pretty(c.primary_channel))}</td>
@@ -205,7 +211,7 @@ async function loadCustomers() {
           <td class="stage">${esc(c.lifecycle_stage)}</td>
           <td>${riskPill(c.risk_band)} <span class="muted">${fmtPct(c.churn_probability)}</span></td>
         </tr>`).join("")
-    : `<tr class="empty-row"><td colspan="9">No customers match these filters</td></tr>`;
+    : `<tr class="empty-row"><td colspan="10">No customers match these filters</td></tr>`;
 
   const end = Math.min(offset + PAGE_SIZE, total);
   $("#page-info").textContent = total ? `${offset + 1}–${end} of ${fmtInt(total)}` : "";
@@ -213,13 +219,36 @@ async function loadCustomers() {
   $("#next").disabled = end >= total;
 }
 
+// ---- "Joined the bank" filter ----
+// Turns a preset like "1-3" (joined 1 to 3 years ago) into two dates, or reads
+// the two date boxes when "Joined between dates" is chosen.
+function yearsAgo(n) {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - n);
+  return d.toISOString().slice(0, 10);          // YYYY-MM-DD
+}
+function joinedRange() {
+  const v = $("#f-joined").value;
+  if (!v) return {};
+  if (v === "custom") return { from: $("#f-joined-from").value, to: $("#f-joined-to").value };
+  const [lo, hi] = v.split("-");                // "1-3" -> joined between 3 and 1 years ago
+  return { from: hi ? yearsAgo(Number(hi)) : "", to: Number(lo) ? yearsAgo(Number(lo)) : "" };
+}
+function fmtJoined(iso) {
+  if (!iso) return "–";
+  return new Date(iso + "T00:00:00").toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+}
+$("#f-joined").addEventListener("change", () => {
+  $("#f-joined-range").hidden = $("#f-joined").value !== "custom";
+});
+
 // Re-load when a filter changes (search waits until you stop typing for 300 ms).
 let searchTimer;
 $("#f-search").addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => { offset = 0; loadCustomers().catch(showError); }, 300);
 });
-["#f-risk", "#f-region", "#f-sort"].forEach((id) =>
+["#f-risk", "#f-region", "#f-sort", "#f-joined", "#f-joined-from", "#f-joined-to"].forEach((id) =>
   $(id).addEventListener("change", () => { offset = 0; loadCustomers().catch(showError); }));
 $("#prev").addEventListener("click", () => { offset = Math.max(0, offset - PAGE_SIZE); loadCustomers().catch(showError); });
 $("#next").addEventListener("click", () => { offset += PAGE_SIZE; loadCustomers().catch(showError); });
@@ -283,7 +312,7 @@ async function openCustomer(id) {
             ["Balance change", `${c.balance_change_3m_pct}%`], ["Salary paid in", c.salary_credited ? "Yes" : "No"]])}
       <h3>Profile</h3>
       ${kv([["Balance", fmtMoney(c.balance)], ["Products", c.products_number],
-            ["Tenure", `${c.tenure} yrs`], ["Credit score", c.credit_score],
+            ["Joined", `${fmtJoined(c.joined_on)} (${c.tenure} yrs)`], ["Credit score", c.credit_score],
             ["Active member", c.active_member ? "Yes" : "No"], ["Credit card", c.credit_card ? "Yes" : "No"],
             ["Primary channel", pretty(c.primary_channel)], ["Country (Kaggle)", c.country]])}
       <p class="muted" style="margin-top:16px">Scored by ${esc(c.model_version ?? "–")} at ${fmtTime(c.scored_at)}</p>`;

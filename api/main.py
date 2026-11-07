@@ -27,6 +27,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal, Optional
@@ -274,10 +275,20 @@ def summary():
     return row
 
 
-LIST_COLUMNS = """customer_id, age, region, country, primary_channel, products_number,
+# WHEN DID THE CUSTOMER JOIN THE BANK?
+# The Kaggle data only gives 'tenure' = whole years with the bank (0-10).
+# We turn that into an approximate join date: the day they arrived on the
+# platform, minus their tenure in years, minus a fixed 0-364 day offset
+# (from their customer_id) so customers with the same tenure don't all share
+# one date. Approximate and synthetic, but stable: it never changes on refresh.
+JOINED_SQL = """(created_at - make_interval(years => tenure)
+                 - make_interval(days => mod(customer_id, 365)::int))::date"""
+
+LIST_COLUMNS = f"""customer_id, age, region, country, primary_channel, products_number,
                   balance, total_txn_count_90d, days_since_last_txn, failed_txn_count_90d,
                   complaints_90d, churn_probability, risk_band, created_at, scored_at,
-                  dormancy_status, dormancy_probability, dormancy_band"""
+                  dormancy_status, dormancy_probability, dormancy_band, tenure,
+                  {JOINED_SQL} AS joined_on"""
 
 
 @app.get("/api/customers")
@@ -285,7 +296,9 @@ def customers(
     risk: Optional[Literal["high", "medium", "low", "unscored"]] = None,
     region: Optional[str] = None,
     search: Optional[str] = Query(None, description="part of a customer_id"),
-    sort: Literal["risk", "newest"] = "risk",
+    sort: Literal["risk", "newest", "joined_recent", "joined_oldest"] = "risk",
+    joined_from: Optional[date] = Query(None, description="joined the bank on or after (YYYY-MM-DD)"),
+    joined_to: Optional[date] = Query(None, description="joined the bank on or before (YYYY-MM-DD)"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -301,7 +314,18 @@ def customers(
     if search:
         where.append("customer_id::text LIKE %s")
         params.append(f"%{search}%")
-    order = "churn_probability DESC NULLS LAST, created_at DESC" if sort == "risk" else "created_at DESC"
+    if joined_from:
+        where.append(f"{JOINED_SQL} >= %s")
+        params.append(joined_from)
+    if joined_to:
+        where.append(f"{JOINED_SQL} <= %s")
+        params.append(joined_to)
+    order = {
+        "risk": "churn_probability DESC NULLS LAST, created_at DESC",
+        "newest": "created_at DESC",
+        "joined_recent": "joined_on DESC, customer_id",
+        "joined_oldest": "joined_on ASC, customer_id",
+    }[sort]
     where_sql = " AND ".join(where)
 
     total = query(f"SELECT COUNT(*) AS n FROM bank_customers WHERE {where_sql}", params)[0]["n"]
@@ -316,7 +340,7 @@ def customers(
 
 @app.get("/api/customers/{customer_id}")
 def customer_360(customer_id: int):
-    rows = query("SELECT * FROM bank_customers WHERE customer_id = %s", [customer_id])
+    rows = query(f"SELECT *, {JOINED_SQL} AS joined_on FROM bank_customers WHERE customer_id = %s", [customer_id])
     if not rows:
         raise HTTPException(404, "Customer not found")
     c = rows[0]

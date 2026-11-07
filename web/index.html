@@ -94,15 +94,30 @@
           <option value="unscored">Not scored yet</option>
         </select>
         <select id="f-region"><option value="">All regions</option></select>
+        <select id="f-joined" title="When the customer joined the bank">
+          <option value="">Joined: any time</option>
+          <option value="0-1">Joined in the last 12 months</option>
+          <option value="1-3">Joined 1–3 years ago</option>
+          <option value="3-5">Joined 3–5 years ago</option>
+          <option value="5-10">Joined 5–10 years ago</option>
+          <option value="10-">Joined over 10 years ago</option>
+          <option value="custom">Joined between dates…</option>
+        </select>
+        <span id="f-joined-range" class="date-range" hidden>
+          <label for="f-joined-from">From</label><input id="f-joined-from" type="date">
+          <label for="f-joined-to">to</label><input id="f-joined-to" type="date">
+        </span>
         <select id="f-sort">
           <option value="risk">Sort: highest risk</option>
-          <option value="newest">Sort: newest</option>
+          <option value="newest">Sort: newest on platform</option>
+          <option value="joined_recent">Sort: joined most recently</option>
+          <option value="joined_oldest">Sort: longest with the bank</option>
         </select>
       </div>
       <div class="table-wrap">
         <table class="table">
           <thead><tr>
-            <th>Customer</th><th>Age</th><th>Region</th><th>Channel</th><th>Products</th>
+            <th>Customer</th><th title="Approximate, from tenure (synthetic)">Joined</th><th>Age</th><th>Region</th><th>Channel</th><th>Products</th>
             <th>Txns (90d)</th><th>Days idle</th><th>Stage</th><th>Risk</th>
           </tr></thead>
           <tbody id="cust-rows"></tbody>
