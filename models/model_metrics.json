@@ -1,0 +1,45 @@
+{
+  "threshold": 0.27,
+  "features": [
+    "credit_score",
+    "age",
+    "tenure",
+    "balance",
+    "products_number",
+    "credit_card",
+    "active_member",
+    "estimated_salary",
+    "uses_mobile_app",
+    "uses_ussd",
+    "uses_internet_banking",
+    "momo_linked",
+    "failed_txn_count_90d",
+    "days_since_last_txn",
+    "branch_visits_90d",
+    "atm_withdrawals_90d",
+    "total_txn_count_90d",
+    "salary_credited",
+    "complaints_90d",
+    "balance_change_3m_pct",
+    "country",
+    "region",
+    "primary_channel"
+  ],
+  "model_name": "XGBoost (calibrated)",
+  "model_version": "v2-20261106-151922",
+  "metrics": {
+    "roc_auc": 0.9268,
+    "pr_auc": 0.8125,
+    "precision": 0.666,
+    "recall": 0.7887,
+    "f1": 0.7222,
+    "confusion_matrix": {
+      "tn": 1432,
+      "fp": 161,
+      "fn": 86,
+      "tp": 321
+    },
+    "roc_auc_without_ghana_features": 0.8483
+  },
+  "trained_at": "2026-11-06T15:19:22.898386+00:00"
+}

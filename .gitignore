@@ -1,0 +1,15 @@
+# ---- Secrets: NEVER upload ----
+.env
+
+# ---- Things that can be rebuilt ----
+venv/
+__pycache__/
+*.pyc
+
+# ---- Data ----
+# The Kaggle CSV stays on your laptop (Kaggle licence, and it's already in Neon).
+dataset/
+
+# ---- Models ----
+# Old rule was "*.pkl". We now DO upload the trained model, because the cloud
+# scorer needs it. It's small (a few MB) and contains no customer data.

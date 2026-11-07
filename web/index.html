@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChurnWatch GH</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- Chart.js draws the charts. Loaded from a CDN, so no install is needed. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ================= TOP BAR ================= -->
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◆</span>
+    <div>
+      <h1>ChurnWatch GH</h1>
+      <p class="subtitle">Retail customer churn &amp; dormancy monitor</p>
+    </div>
+  </div>
+  <div class="status">
+    <span id="live-dot" class="dot"></span>
+    <span id="status-text">Connecting…</span>
+    <button id="refresh-btn" class="btn ghost" title="Refresh now">↻ Refresh</button>
+  </div>
+</header>
+
+<!-- ================= NAV TABS ================= -->
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-view="overview">Overview</button>
+  <button class="tab" data-view="customers">Customers</button>
+  <button class="tab" data-view="whatif">What-if</button>
+  <button class="tab" data-view="model">Model</button>
+</nav>
+
+<div class="banner">
+  Demo platform: the customers are <strong>simulated</strong> from the Kaggle bank churn dataset, and the
+  Ghana channel &amp; 360 activity fields are <strong>synthetic</strong>.
+</div>
+
+<main>
+  <!-- ================= OVERVIEW ================= -->
+  <section id="view-overview" class="view active">
+    <div class="kpis">
+      <div class="kpi"><span class="kpi-label">Live customers</span><span class="kpi-value" id="kpi-live">–</span><span class="kpi-sub" id="kpi-new">–</span></div>
+      <div class="kpi danger"><span class="kpi-label">High risk</span><span class="kpi-value" id="kpi-high">–</span><span class="kpi-sub" id="kpi-high-pct">–</span></div>
+      <div class="kpi"><span class="kpi-label">Average churn risk</span><span class="kpi-value" id="kpi-avg">–</span><span class="kpi-sub" id="kpi-hist">–</span></div>
+      <div class="kpi warn"><span class="kpi-label">Balance at risk</span><span class="kpi-value" id="kpi-balance">–</span><span class="kpi-sub">held by high-risk customers</span></div>
+    </div>
+
+    <div class="grid two">
+      <div class="card wide">
+        <div class="card-head"><h2>Arrivals &amp; risk over time</h2><span class="muted" id="trend-note">last 12 hours, 15-minute buckets</span></div>
+        <div class="chart-box"><canvas id="trend-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Risk mix</h2></div>
+        <div class="chart-box small"><canvas id="mix-chart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid two">
+      <div class="card">
+        <div class="card-head">
+          <h2>Average risk by</h2>
+          <select id="breakdown-select">
+            <option value="region">Region</option>
+            <option value="primary_channel">Primary channel</option>
+            <option value="products">Number of products</option>
+            <option value="country">Country (Kaggle)</option>
+          </select>
+        </div>
+        <div class="chart-box"><canvas id="breakdown-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Top 8 at-risk customers</h2><button class="link" data-goto="customers">See all →</button></div>
+        <table class="table compact"><tbody id="top-risk"></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CUSTOMERS ================= -->
+  <section id="view-customers" class="view">
+    <div class="card">
+      <div class="filters">
+        <input id="f-search" type="search" placeholder="Search customer ID…">
+        <select id="f-risk">
+          <option value="">All risk levels</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+          <option value="unscored">Not scored yet</option>
+        </select>
+        <select id="f-region"><option value="">All regions</option></select>
+        <select id="f-sort">
+          <option value="risk">Sort: highest risk</option>
+          <option value="newest">Sort: newest</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr>
+            <th>Customer</th><th>Age</th><th>Region</th><th>Channel</th><th>Products</th>
+            <th>Txns (90d)</th><th>Days idle</th><th>Stage</th><th>Risk</th>
+          </tr></thead>
+          <tbody id="cust-rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="prev" class="btn ghost">← Prev</button>
+        <span id="page-info" class="muted"></span>
+        <button id="next" class="btn ghost">Next →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= WHAT-IF ================= -->
+  <section id="view-whatif" class="view">
+    <div class="grid two">
+      <div class="card">
+        <div class="card-head"><h2>Build a customer</h2><span class="muted">change anything, then score</span></div>
+        <form id="whatif-form" class="form">
+          <label>Age <input name="age" type="number" value="38" min="18" max="100"></label>
+          <label>Products held <input name="products_number" type="number" value="1" min="1" max="4"></label>
+          <label>Balance <input name="balance" type="number" value="75000" min="0" step="1000"></label>
+          <label>Region
+            <select name="region">
+              <option>Greater Accra</option><option>Ashanti</option><option>Western</option><option>Eastern</option>
+              <option>Central</option><option>Northern</option><option>Volta</option><option>Bono</option>
+              <option>Upper East</option><option>Upper West</option>
+            </select>
+          </label>
+          <label>Primary channel
+            <select name="primary_channel">
+              <option value="mobile_app">Mobile app</option><option value="ussd">USSD</option>
+              <option value="momo">MoMo</option><option value="internet_banking">Internet banking</option>
+              <option value="branch">Branch</option>
+            </select>
+          </label>
+          <label>Transactions (90 days) <input name="total_txn_count_90d" type="number" value="15" min="0"></label>
+          <label>Days since last transaction <input name="days_since_last_txn" type="number" value="5" min="0"></label>
+          <label>Failed transactions (90 days) <input name="failed_txn_count_90d" type="number" value="1" min="0"></label>
+          <label>Complaints (90 days) <input name="complaints_90d" type="number" value="0" min="0"></label>
+          <label>Balance change, 3 months (%) <input name="balance_change_3m_pct" type="number" value="0" min="-100" max="100"></label>
+          <div class="checks">
+            <label><input name="active_member" type="checkbox" checked> Active member</label>
+            <label><input name="salary_credited" type="checkbox" checked> Salary paid in</label>
+            <label><input name="uses_mobile_app" type="checkbox" checked> Uses app</label>
+            <label><input name="uses_ussd" type="checkbox" checked> Uses USSD</label>
+            <label><input name="momo_linked" type="checkbox" checked> MoMo linked</label>
+            <label><input name="uses_internet_banking" type="checkbox"> Internet banking</label>
+          </div>
+          <button class="btn primary" type="submit">Score this customer</button>
+        </form>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Result</h2></div>
+        <div id="whatif-result" class="result empty">Fill in the form and press <strong>Score</strong>.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= MODEL ================= -->
+  <section id="view-model" class="view">
+    <div class="card">
+      <div class="card-head"><h2>Model in production</h2></div>
+      <div id="model-info" class="model-grid"></div>
+      <p class="muted note">
+        Scores come from the test set (2,000 customers the model never saw in training).
+        "Kaggle-only ROC-AUC" shows what the real columns achieve alone. The extra lift comes from the synthetic
+        Ghana &amp; 360 features, so it reflects our simulation assumptions, not proven Ghanaian behaviour.
+      </p>
+    </div>
+  </section>
+</main>
+
+<!-- ================= CUSTOMER 360 DRAWER ================= -->
+<div id="drawer-backdrop" class="backdrop hidden"></div>
+<aside id="drawer" class="drawer hidden" aria-label="Customer 360">
+  <button id="drawer-close" class="close" aria-label="Close">×</button>
+  <div id="drawer-body"></div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>
