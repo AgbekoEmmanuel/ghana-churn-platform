@@ -1,23 +1,10 @@
-# =====================================================================
-# Phase 7 - GitHub Actions: runs the live pipeline in the cloud, 24/7.
-# Every 5 minutes GitHub starts a fresh Linux machine, which:
-#   1. downloads this repository,
-#   2. installs the Python libraries,
-#   3. adds one batch of new customers  (simulator.py --max-batches 1)
-#   4. scores everything waiting        (scorer.py --once)
-# then shuts down. Your laptop can be off.
-#
-# The Neon connection string is NOT in the code: it comes from the
-# repository secret called DATABASE_URL (Settings > Secrets > Actions).
-# =====================================================================
 name: Live churn pipeline
 
 on:
   schedule:
-    - cron: "*/5 * * * *"      # every 5 minutes (GitHub may run it a few minutes late)
-  workflow_dispatch:            # adds a "Run workflow" button for manual runs
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
-# Never run two copies at once (they'd create duplicate customer IDs).
 concurrency:
   group: churn-pipeline
   cancel-in-progress: false
@@ -33,11 +20,11 @@ jobs:
       - name: Get the code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11 (same as your laptop)
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip             # re-uses downloaded libraries, so runs are faster
+          cache: pip
 
       - name: Install libraries
         run: pip install -r requirements.txt
