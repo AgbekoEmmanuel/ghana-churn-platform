@@ -25,6 +25,7 @@ Then open http://127.0.0.1:8000/docs to try every endpoint in your browser.
 
 import os
 import threading
+import time
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
@@ -73,32 +74,44 @@ def get_pool():
     return _pool
 
 
+# Neon goes to sleep after ~5 idle minutes and silently closes our open
+# connections. Without care, the first requests after that fail and the page
+# shows "API not reachable". So: throw away dead connections and retry.
+DB_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
+
+
 @contextmanager
 def db_cursor():
     """Borrow a connection, give back a cursor that returns dicts, then return it."""
     pool = get_pool()
     conn = pool.getconn()
+    if conn.closed:                       # already dead: swap it for a fresh one
+        pool.putconn(conn, close=True)
+        conn = pool.getconn()
     broken = False
     try:
         with conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             yield cur
-    except psycopg2.OperationalError:
+    except DB_ERRORS:
         broken = True          # e.g. Neon closed an idle connection
         raise
     finally:
-        pool.putconn(conn, close=broken)
+        pool.putconn(conn, close=broken or bool(conn.closed))
 
 
-def query(sql: str, params=None, retry: bool = True):
-    """Run a SELECT and return a list of dicts. Retries once if the connection dropped."""
-    try:
-        with db_cursor() as cur:
-            cur.execute(sql, params)
-            return [clean(r) for r in cur.fetchall()]
-    except psycopg2.OperationalError:
-        if retry:
-            return query(sql, params, retry=False)
-        raise HTTPException(503, "Database unavailable, try again shortly")
+def query(sql: str, params=None, attempts: int = 4):
+    """Run a SELECT and return a list of dicts.
+    Retries a few times, because after Neon wakes up several pooled
+    connections can be dead at once (each retry discards one)."""
+    for attempt in range(attempts):
+        try:
+            with db_cursor() as cur:
+                cur.execute(sql, params)
+                return [clean(r) for r in cur.fetchall()]
+        except DB_ERRORS:
+            if attempt == attempts - 1:
+                raise HTTPException(503, "Database is waking up, try again in a few seconds")
+            time.sleep(0.5 * (attempt + 1))   # give Neon a moment to wake
 
 
 def clean(row: dict) -> dict:
