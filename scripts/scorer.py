@@ -195,14 +195,19 @@ def main():
                 # If a full batch came back there may be more waiting: go again at once.
                 if n == BATCH_LIMIT:
                     continue
-            except psycopg2.OperationalError as e:
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                # Neon can drop idle/long connections. When that happens mid-transaction,
+                # `with conn` raises InterfaceError while rolling back, so catch both.
                 print(f"Connection problem ({str(e).strip()[:60]}...). Reconnecting in 5s.")
                 time.sleep(5)
                 try:
                     conn.close()
                 except Exception:
                     pass
-                conn = psycopg2.connect(DATABASE_URL)
+                try:
+                    conn = psycopg2.connect(DATABASE_URL)
+                except psycopg2.OperationalError as e2:
+                    print(f"Reconnect failed ({str(e2).strip()[:60]}...). Will retry.")
                 continue
 
             if args.once:

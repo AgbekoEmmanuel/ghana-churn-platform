@@ -213,15 +213,19 @@ def main():
                 print(f"[{datetime.now():%H:%M:%S}] +{n} customer(s)  ids {ids}  "
                       f"(total this run: {total})"
                       + (f"  | aged {aged} customers by {args.days_per_run} day(s)" if aged else ""))
-            except psycopg2.OperationalError as e:
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
                 # Wi-Fi blip or Neon waking up: reconnect and carry on.
+                # (InterfaceError = the connection was already closed under us.)
                 print(f"Connection problem ({str(e).strip()[:60]}...). Reconnecting in 5s.")
                 time.sleep(5)
                 try:
                     conn.close()
                 except Exception:
                     pass
-                conn = psycopg2.connect(lb.DATABASE_URL)
+                try:
+                    conn = psycopg2.connect(lb.DATABASE_URL)
+                except psycopg2.OperationalError as e2:
+                    print(f"Reconnect failed ({str(e2).strip()[:60]}...). Will retry.")
                 continue
 
             if args.max_batches and batches >= args.max_batches:
