@@ -4,246 +4,344 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ChurnWatch GH</title>
+  <script>
+    // Pick the theme before anything is drawn (no flash): saved choice, else the computer's setting.
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem("cw-theme"); } catch (e) {}
+      var theme = saved || (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <!-- Chart.js draws the charts. Loaded from a CDN, so no install is needed. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
 <body>
 
-<!-- ================= TOP BAR ================= -->
-<header class="topbar">
-  <div class="brand">
-    <span class="logo">◆</span>
-    <div>
-      <h1>ChurnWatch GH</h1>
-      <p class="subtitle">Retail customer churn &amp; dormancy monitor</p>
-    </div>
-  </div>
-  <div class="status">
-    <span id="live-dot" class="dot"></span>
-    <span id="status-text">Connecting…</span>
-    <button id="refresh-btn" class="btn ghost" title="Refresh now">↻ Refresh</button>
-  </div>
-</header>
+<!-- ================= ICONS (drawn once, reused with <use>) ================= -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-logo" viewBox="0 0 24 24"><path d="M12 2.5 20 6v6c0 5-3.4 8.6-8 9.5C7.4 20.6 4 17 4 12V6l8-3.5Z"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2.5"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0 0 4h14a2 2 0 0 1 2 2v4h-4a2 2 0 0 0 0 4h4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5"/></symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M22 12h-4l-3 8L9 4l-3 8H2"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+  </defs>
+</svg>
 
-<!-- ================= NAV TABS ================= -->
-<nav class="tabs" role="tablist">
-  <button class="tab active" data-view="overview">Overview</button>
-  <button class="tab" data-view="customers">Customers</button>
-  <button class="tab" data-view="dormancy">Dormancy</button>
-  <button class="tab" data-view="whatif">What-if</button>
-  <button class="tab" data-view="model">Model</button>
-</nav>
-
-<div class="banner">
-  Demo platform: the customers are <strong>simulated</strong> from the Kaggle bank churn dataset, and the
-  Ghana channel &amp; 360 activity fields are <strong>synthetic</strong>.
+<!-- Soft blurred lights behind the glass -->
+<div class="ambient" aria-hidden="true">
+  <span class="glow g1"></span><span class="glow g2"></span><span class="glow g3"></span>
+  <span class="glow g4"></span><span class="glow g5"></span>
 </div>
 
-<main>
-  <!-- ================= OVERVIEW ================= -->
-  <section id="view-overview" class="view active">
-    <div class="kpis">
-      <div class="kpi"><span class="kpi-label">Live customers</span><span class="kpi-value" id="kpi-live">–</span><span class="kpi-sub" id="kpi-new">–</span></div>
-      <div class="kpi danger"><span class="kpi-label">High risk</span><span class="kpi-value" id="kpi-high">–</span><span class="kpi-sub" id="kpi-high-pct">–</span></div>
-      <div class="kpi"><span class="kpi-label">Average churn risk</span><span class="kpi-value" id="kpi-avg">–</span><span class="kpi-sub" id="kpi-hist">–</span></div>
-      <div class="kpi warn"><span class="kpi-label">Balance at risk</span><span class="kpi-value" id="kpi-balance">–</span><span class="kpi-sub">held by high-risk customers</span></div>
-    </div>
+<!-- ================= FLOATING NAV RAIL ================= -->
+<nav class="rail glass" aria-label="Sections">
+  <div class="rail-logo" title="ChurnWatch GH"><svg><use href="#i-logo"/></svg></div>
+  <button class="nav-btn active" data-view="overview"><svg><use href="#i-grid"/></svg><span>Overview</span></button>
+  <button class="nav-btn" data-view="customers"><svg><use href="#i-users"/></svg><span>Customers</span></button>
+  <button class="nav-btn" data-view="dormancy"><svg><use href="#i-moon"/></svg><span>Dormancy</span></button>
+  <button class="nav-btn" data-view="whatif"><svg><use href="#i-sliders"/></svg><span>What-if</span></button>
+  <button class="nav-btn" data-view="model"><svg><use href="#i-cpu"/></svg><span>Model</span></button>
+</nav>
 
-    <div class="grid two">
-      <div class="card wide">
-        <div class="card-head"><h2>Arrivals &amp; risk over time</h2><span class="muted" id="trend-note">last 12 hours, 15-minute buckets</span></div>
-        <div class="chart-box"><canvas id="trend-chart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>Risk mix</h2></div>
-        <div class="chart-box small"><canvas id="mix-chart"></canvas></div>
-      </div>
+<!-- ================= MAIN GLASS WINDOW ================= -->
+<div class="shell glass">
+  <header class="top">
+    <div>
+      <p class="eyebrow">ChurnWatch GH</p>
+      <h1 id="view-title">Dashboard</h1>
+      <p class="subtitle" id="view-sub">Live churn &amp; dormancy across Ghana retail customers</p>
     </div>
+    <div class="top-actions">
+      <div class="status-chip"><span id="live-dot" class="dot"></span><span id="status-text">Connecting…</span></div>
+      <button id="theme-btn" class="theme-toggle" title="Switch light / dark mode" aria-label="Switch light or dark mode">
+        <span class="t-dark"><svg><use href="#i-moon"/></svg></span>
+        <span class="t-light"><svg><use href="#i-sun"/></svg></span>
+      </button>
+      <button id="refresh-btn" class="icon-btn" title="Refresh now" aria-label="Refresh now"><svg><use href="#i-refresh"/></svg></button>
+    </div>
+  </header>
 
-    <div class="grid two">
+  <div class="banner">
+    <svg><use href="#i-info"/></svg>
+    <span>Demo platform: customers are <strong>simulated</strong> from the Kaggle bank churn dataset; the
+    Ghana channel &amp; 360 activity fields are <strong>synthetic</strong>.</span>
+  </div>
+
+  <main>
+    <!-- ================= OVERVIEW ================= -->
+    <section id="view-overview" class="view active">
+      <div class="overview-grid">
+        <div class="col-main">
+          <div class="kpi-strip">
+            <div class="kpi"><span class="kpi-icon"><svg><use href="#i-users"/></svg></span>
+              <div><span class="kpi-label">Live customers</span><span class="kpi-value" id="kpi-live">–</span><span class="kpi-sub" id="kpi-new">–</span></div></div>
+            <div class="kpi"><span class="kpi-icon hot"><svg><use href="#i-alert"/></svg></span>
+              <div><span class="kpi-label">High churn risk</span><span class="kpi-value" id="kpi-high">–</span><span class="kpi-sub" id="kpi-high-pct">–</span></div></div>
+            <div class="kpi"><span class="kpi-icon"><svg><use href="#i-wallet"/></svg></span>
+              <div><span class="kpi-label">Balance at risk</span><span class="kpi-value" id="kpi-balance">–</span><span class="kpi-sub">held by high-risk customers</span></div></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div><h2>Average churn risk</h2><p class="muted">share of new customers likely to leave, over time</p></div>
+              <div class="head-tools">
+                <div class="legend">
+                  <span><i class="sw" style="background:var(--chart-line)"></i>Avg churn risk</span>
+                  <span><i class="sw dash"></i>Historical rate</span>
+                </div>
+                <div class="segmented" role="group" aria-label="Time range">
+                  <button class="seg" data-range="180">3h</button>
+                  <button class="seg active" data-range="720">12h</button>
+                  <button class="seg" data-range="1440">24h</button>
+                </div>
+              </div>
+            </div>
+            <div class="chart-box tall"><canvas id="risk-chart"></canvas><p class="chart-empty" hidden></p></div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-head">
+                <div><h2>New customers</h2><p class="muted">arrivals per time bucket</p></div>
+                <div class="legend">
+                  <span><i class="sw" style="background:var(--neutral-bar)"></i>Other</span>
+                  <span><i class="sw" style="background:var(--high)"></i>High risk</span>
+                </div>
+              </div>
+              <div class="chart-box"><canvas id="arrivals-chart"></canvas><p class="chart-empty" hidden></p></div>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <div><h2>Average risk by</h2><p class="muted">scored live customers</p></div>
+                <select id="breakdown-select" aria-label="Group by">
+                  <option value="region">Region</option>
+                  <option value="primary_channel">Primary channel</option>
+                  <option value="products">Number of products</option>
+                  <option value="country">Country (Kaggle)</option>
+                </select>
+              </div>
+              <div class="chart-box"><canvas id="breakdown-chart"></canvas><p class="chart-empty" hidden></p></div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="col-side">
+          <div class="card hero-card">
+            <div class="card-head"><div><h2>Portfolio risk</h2><p class="muted">average churn probability</p></div></div>
+            <div id="risk-ring" class="ring-wrap"></div>
+            <p class="ring-note" id="kpi-hist">–</p>
+            <div class="mix">
+              <div class="segbar" id="mix-bar"></div>
+              <ul class="mix-legend" id="mix-legend"></ul>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div><h2>Watchlist</h2><p class="muted">highest churn risk right now</p></div>
+              <button class="link" data-goto="customers">See all <svg><use href="#i-arrow"/></svg></button>
+            </div>
+            <ul class="watchlist" id="top-risk"></ul>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ================= CUSTOMERS ================= -->
+    <section id="view-customers" class="view">
       <div class="card">
-        <div class="card-head">
-          <h2>Average risk by</h2>
-          <select id="breakdown-select">
-            <option value="region">Region</option>
-            <option value="primary_channel">Primary channel</option>
-            <option value="products">Number of products</option>
-            <option value="country">Country (Kaggle)</option>
+        <div class="filters">
+          <label class="search"><svg><use href="#i-search"/></svg><input id="f-search" type="search" placeholder="Search customer ID…"></label>
+          <select id="f-risk" aria-label="Risk level">
+            <option value="">All risk levels</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="unscored">Not scored yet</option>
+          </select>
+          <select id="f-region" aria-label="Region"><option value="">All regions</option></select>
+          <select id="f-joined" title="When the customer joined the bank" aria-label="Joined">
+            <option value="">Joined: any time</option>
+            <option value="0-1">Joined in the last 12 months</option>
+            <option value="1-3">Joined 1–3 years ago</option>
+            <option value="3-5">Joined 3–5 years ago</option>
+            <option value="5-10">Joined 5–10 years ago</option>
+            <option value="10-">Joined over 10 years ago</option>
+            <option value="custom">Joined between dates…</option>
+          </select>
+          <span id="f-joined-range" class="date-range" hidden>
+            <label for="f-joined-from">From</label><input id="f-joined-from" type="date">
+            <label for="f-joined-to">to</label><input id="f-joined-to" type="date">
+          </span>
+          <select id="f-sort" aria-label="Sort">
+            <option value="risk">Sort: highest risk</option>
+            <option value="newest">Sort: newest on platform</option>
+            <option value="joined_recent">Sort: joined most recently</option>
+            <option value="joined_oldest">Sort: longest with the bank</option>
           </select>
         </div>
-        <div class="chart-box"><canvas id="breakdown-chart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>Top 8 at-risk customers</h2><button class="link" data-goto="customers">See all →</button></div>
-        <table class="table compact"><tbody id="top-risk"></tbody></table>
-      </div>
-    </div>
-  </section>
-
-  <!-- ================= CUSTOMERS ================= -->
-  <section id="view-customers" class="view">
-    <div class="card">
-      <div class="filters">
-        <input id="f-search" type="search" placeholder="Search customer ID…">
-        <select id="f-risk">
-          <option value="">All risk levels</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-          <option value="unscored">Not scored yet</option>
-        </select>
-        <select id="f-region"><option value="">All regions</option></select>
-        <select id="f-joined" title="When the customer joined the bank">
-          <option value="">Joined: any time</option>
-          <option value="0-1">Joined in the last 12 months</option>
-          <option value="1-3">Joined 1–3 years ago</option>
-          <option value="3-5">Joined 3–5 years ago</option>
-          <option value="5-10">Joined 5–10 years ago</option>
-          <option value="10-">Joined over 10 years ago</option>
-          <option value="custom">Joined between dates…</option>
-        </select>
-        <span id="f-joined-range" class="date-range" hidden>
-          <label for="f-joined-from">From</label><input id="f-joined-from" type="date">
-          <label for="f-joined-to">to</label><input id="f-joined-to" type="date">
-        </span>
-        <select id="f-sort">
-          <option value="risk">Sort: highest risk</option>
-          <option value="newest">Sort: newest on platform</option>
-          <option value="joined_recent">Sort: joined most recently</option>
-          <option value="joined_oldest">Sort: longest with the bank</option>
-        </select>
-      </div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead><tr>
-            <th>Customer</th><th title="Approximate, from tenure (synthetic)">Joined</th><th>Age</th><th>Region</th><th>Channel</th><th>Products</th>
-            <th>Txns (90d)</th><th>Days idle</th><th>Stage</th><th>Risk</th>
-          </tr></thead>
-          <tbody id="cust-rows"></tbody>
-        </table>
-      </div>
-      <div class="pager">
-        <button id="prev" class="btn ghost">← Prev</button>
-        <span id="page-info" class="muted"></span>
-        <button id="next" class="btn ghost">Next →</button>
-      </div>
-    </div>
-  </section>
-
-  <!-- ================= DORMANCY ================= -->
-  <section id="view-dormancy" class="view">
-    <p class="muted rule">Rule: an account is <strong>dormant</strong> after <strong>90 days</strong> with no activity of any kind
-      (deposit, withdrawal, transfer, balance check, login). "Going dormant" is the model's early warning for active customers.</p>
-    <div class="kpis">
-      <div class="kpi danger"><span class="kpi-label">Dormant now</span><span class="kpi-value" id="d-dormant">–</span><span class="kpi-sub" id="d-dormant-sub">–</span></div>
-      <div class="kpi warn"><span class="kpi-label">Idle balance (dormant)</span><span class="kpi-value" id="d-dormant-bal">–</span><span class="kpi-sub">sitting in dormant accounts</span></div>
-      <div class="kpi"><span class="kpi-label">Going dormant (high)</span><span class="kpi-value" id="d-going">–</span><span class="kpi-sub" id="d-going-sub">–</span></div>
-      <div class="kpi"><span class="kpi-label">Balance at risk of going idle</span><span class="kpi-value" id="d-going-bal">–</span><span class="kpi-sub">held by high-risk active customers</span></div>
-    </div>
-
-    <div class="grid two even">
-      <div class="card">
-        <div class="card-head"><h2>Why customers go dormant</h2><span class="muted">model drivers</span></div>
-        <div class="chart-box"><canvas id="drivers-chart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>How long customers have been idle</h2></div>
-        <div class="chart-box"><canvas id="idle-chart"></canvas></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-head">
-        <div class="segmented" role="group">
-          <button class="seg active" data-dstatus="going">Going dormant</button>
-          <button class="seg" data-dstatus="dormant">Already dormant</button>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr>
+              <th>Customer</th><th title="Approximate, from tenure (synthetic)">Joined</th><th>Age</th><th>Channel</th><th>Products</th>
+              <th>Txns (90d)</th><th>Days idle</th><th>Stage</th><th>Churn risk</th>
+            </tr></thead>
+            <tbody id="cust-rows"></tbody>
+          </table>
         </div>
-        <select id="d-region"><option value="">All regions</option></select>
+        <div class="pager">
+          <button id="prev" class="btn">← Prev</button>
+          <span id="page-info" class="muted"></span>
+          <button id="next" class="btn">Next →</button>
+        </div>
       </div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead><tr id="d-head"></tr></thead>
-          <tbody id="d-rows"></tbody>
-        </table>
-      </div>
-      <div class="pager">
-        <button id="d-prev" class="btn ghost">← Prev</button>
-        <span id="d-page-info" class="muted"></span>
-        <button id="d-next" class="btn ghost">Next →</button>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- ================= WHAT-IF ================= -->
-  <section id="view-whatif" class="view">
-    <div class="grid two">
-      <div class="card">
-        <div class="card-head"><h2>Build a customer</h2><span class="muted">change anything, then score</span></div>
-        <form id="whatif-form" class="form">
-          <label>Age <input name="age" type="number" value="38" min="18" max="100"></label>
-          <label>Products held <input name="products_number" type="number" value="1" min="1" max="4"></label>
-          <label>Balance <input name="balance" type="number" value="75000" min="0" step="1000"></label>
-          <label>Region
-            <select name="region">
-              <option>Greater Accra</option><option>Ashanti</option><option>Western</option><option>Eastern</option>
-              <option>Central</option><option>Northern</option><option>Volta</option><option>Bono</option>
-              <option>Upper East</option><option>Upper West</option>
-            </select>
-          </label>
-          <label>Primary channel
-            <select name="primary_channel">
-              <option value="mobile_app">Mobile app</option><option value="ussd">USSD</option>
-              <option value="momo">MoMo</option><option value="internet_banking">Internet banking</option>
-              <option value="branch">Branch</option>
-            </select>
-          </label>
-          <label>Transactions (90 days) <input name="total_txn_count_90d" type="number" value="15" min="0"></label>
-          <label>Days since last transaction <input name="days_since_last_txn" type="number" value="5" min="0"></label>
-          <label>Failed transactions (90 days) <input name="failed_txn_count_90d" type="number" value="1" min="0"></label>
-          <label>Complaints (90 days) <input name="complaints_90d" type="number" value="0" min="0"></label>
-          <label>Balance change, 3 months (%) <input name="balance_change_3m_pct" type="number" value="0" min="-100" max="100"></label>
-          <div class="checks">
-            <label><input name="active_member" type="checkbox" checked> Active member</label>
-            <label><input name="salary_credited" type="checkbox" checked> Salary paid in</label>
-            <label><input name="uses_mobile_app" type="checkbox" checked> Uses app</label>
-            <label><input name="uses_ussd" type="checkbox" checked> Uses USSD</label>
-            <label><input name="momo_linked" type="checkbox" checked> MoMo linked</label>
-            <label><input name="uses_internet_banking" type="checkbox"> Internet banking</label>
+    <!-- ================= DORMANCY ================= -->
+    <section id="view-dormancy" class="view">
+      <p class="rule"><svg><use href="#i-info"/></svg><span>An account is <strong>dormant</strong> after <strong>90 days</strong> with no activity of any kind
+        (deposit, withdrawal, transfer, balance check, login). "Going dormant" is the model's early warning for active customers.</span></p>
+      <div class="kpi-strip four">
+        <div class="kpi"><span class="kpi-icon hot"><svg><use href="#i-moon"/></svg></span>
+          <div><span class="kpi-label">Dormant now</span><span class="kpi-value" id="d-dormant">–</span><span class="kpi-sub" id="d-dormant-sub">–</span></div></div>
+        <div class="kpi"><span class="kpi-icon"><svg><use href="#i-wallet"/></svg></span>
+          <div><span class="kpi-label">Idle balance</span><span class="kpi-value" id="d-dormant-bal">–</span><span class="kpi-sub">sitting in dormant accounts</span></div></div>
+        <div class="kpi"><span class="kpi-icon"><svg><use href="#i-clock"/></svg></span>
+          <div><span class="kpi-label">Going dormant (high)</span><span class="kpi-value" id="d-going">–</span><span class="kpi-sub" id="d-going-sub">–</span></div></div>
+        <div class="kpi"><span class="kpi-icon"><svg><use href="#i-pulse"/></svg></span>
+          <div><span class="kpi-label">Balance going idle</span><span class="kpi-value" id="d-going-bal">–</span><span class="kpi-sub">held by high-risk active customers</span></div></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><div><h2>Why customers go dormant</h2><p class="muted">model drivers, share of importance</p></div></div>
+          <div class="chart-box"><canvas id="drivers-chart"></canvas><p class="chart-empty" hidden></p></div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <div><h2>How long customers have been idle</h2><p class="muted">days since last activity</p></div>
+            <div class="legend">
+              <span><i class="sw" style="background:var(--neutral-bar)"></i>Active</span>
+              <span><i class="sw" style="background:var(--high)"></i>Dormant</span>
+            </div>
           </div>
-          <button class="btn primary" type="submit">Score this customer</button>
-        </form>
+          <div class="chart-box"><canvas id="idle-chart"></canvas><p class="chart-empty" hidden></p></div>
+        </div>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>Result</h2></div>
-        <div id="whatif-result" class="result empty">Fill in the form and press <strong>Score</strong>.</div>
-      </div>
-    </div>
-  </section>
 
-  <!-- ================= MODEL ================= -->
-  <section id="view-model" class="view">
-    <div class="card">
-      <div class="card-head"><h2>Churn model in production</h2></div>
-      <div id="model-info" class="model-grid"></div>
-      <p class="muted note">
-        Scores come from the test set (2,000 customers the model never saw in training).
-        "Kaggle-only ROC-AUC" shows what the real columns achieve alone. The extra lift comes from the synthetic
-        Ghana &amp; 360 features, so it reflects our simulation assumptions, not proven Ghanaian behaviour.
-      </p>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <div class="card-head"><h2>Dormancy model</h2><span class="muted">predicts going dormant in the next 90 days</span></div>
-      <div id="dormancy-model-info" class="model-grid"></div>
-      <p class="muted note">The "went dormant" history used for training is synthetic, so these scores reflect our simulation assumptions.</p>
-    </div>
-  </section>
-</main>
+      <div class="card">
+        <div class="card-head">
+          <div class="segmented" role="group" aria-label="Dormancy status">
+            <button class="seg active" data-dstatus="going">Going dormant</button>
+            <button class="seg" data-dstatus="dormant">Already dormant</button>
+          </div>
+          <select id="d-region" aria-label="Region"><option value="">All regions</option></select>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr id="d-head"></tr></thead>
+            <tbody id="d-rows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="d-prev" class="btn">← Prev</button>
+          <span id="d-page-info" class="muted"></span>
+          <button id="d-next" class="btn">Next →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= WHAT-IF ================= -->
+    <section id="view-whatif" class="view">
+      <div class="grid-2 whatif">
+        <div class="card">
+          <div class="card-head"><div><h2>Build a customer</h2><p class="muted">change anything, then score</p></div></div>
+          <form id="whatif-form" class="form">
+            <label>Age <input name="age" type="number" value="38" min="18" max="100"></label>
+            <label>Products held <input name="products_number" type="number" value="1" min="1" max="4"></label>
+            <label>Balance (GH₵) <input name="balance" type="number" value="75000" min="0" step="1000"></label>
+            <label>Region
+              <select name="region">
+                <option>Greater Accra</option><option>Ashanti</option><option>Western</option><option>Eastern</option>
+                <option>Central</option><option>Northern</option><option>Volta</option><option>Bono</option>
+                <option>Upper East</option><option>Upper West</option>
+              </select>
+            </label>
+            <label>Primary channel
+              <select name="primary_channel">
+                <option value="mobile_app">Mobile app</option><option value="ussd">USSD</option>
+                <option value="momo">MoMo</option><option value="internet_banking">Internet banking</option>
+                <option value="branch">Branch</option>
+              </select>
+            </label>
+            <label>Transactions (90 days) <input name="total_txn_count_90d" type="number" value="15" min="0"></label>
+            <label>Days since last transaction <input name="days_since_last_txn" type="number" value="5" min="0"></label>
+            <label>Failed transactions (90 days) <input name="failed_txn_count_90d" type="number" value="1" min="0"></label>
+            <label>Complaints (90 days) <input name="complaints_90d" type="number" value="0" min="0"></label>
+            <label>Balance change, 3 months (%) <input name="balance_change_3m_pct" type="number" value="0" min="-100" max="100"></label>
+            <div class="toggles">
+              <label class="toggle"><input name="active_member" type="checkbox" checked><span>Active member</span></label>
+              <label class="toggle"><input name="salary_credited" type="checkbox" checked><span>Salary paid in</span></label>
+              <label class="toggle"><input name="uses_mobile_app" type="checkbox" checked><span>Uses app</span></label>
+              <label class="toggle"><input name="uses_ussd" type="checkbox" checked><span>Uses USSD</span></label>
+              <label class="toggle"><input name="momo_linked" type="checkbox" checked><span>MoMo linked</span></label>
+              <label class="toggle"><input name="uses_internet_banking" type="checkbox"><span>Internet banking</span></label>
+            </div>
+            <button class="btn primary" type="submit">Score this customer</button>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h2>Result</h2><p class="muted">not saved, only asks the model</p></div></div>
+          <div id="whatif-result" class="result empty">
+            <div class="ghost-ring"></div>
+            <p>Fill in the form and press <strong>Score this customer</strong>.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= MODEL ================= -->
+    <section id="view-model" class="view">
+      <div class="grid-2 even">
+        <div class="card">
+          <div class="card-head"><div><h2>Churn model</h2><p class="muted">in production · test set of 2,000 unseen customers</p></div></div>
+          <div id="model-info"></div>
+          <p class="muted note">
+            "Kaggle-only ROC-AUC" shows what the real columns achieve alone. The extra lift comes from the synthetic
+            Ghana &amp; 360 features, so it reflects our simulation assumptions, not proven Ghanaian behaviour.
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h2>Dormancy model</h2><p class="muted">predicts going dormant in the next 90 days</p></div></div>
+          <div id="dormancy-model-info"></div>
+          <p class="muted note">The "went dormant" history used for training is synthetic, so these scores reflect our simulation assumptions.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
 
 <!-- ================= CUSTOMER 360 DRAWER ================= -->
 <div id="drawer-backdrop" class="backdrop hidden"></div>
-<aside id="drawer" class="drawer hidden" aria-label="Customer 360">
-  <button id="drawer-close" class="close" aria-label="Close">×</button>
+<aside id="drawer" class="drawer glass hidden" aria-label="Customer 360">
+  <button id="drawer-close" class="icon-btn close" aria-label="Close"><svg><use href="#i-close"/></svg></button>
   <div id="drawer-body"></div>
 </aside>
 
