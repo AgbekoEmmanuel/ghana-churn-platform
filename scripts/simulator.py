@@ -46,6 +46,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import psycopg2
+import psycopg2.errors
 from psycopg2.extras import execute_values
 
 # Re-use the exact same generators and settings from Phase 2.
@@ -213,6 +214,12 @@ def main():
                 print(f"[{datetime.now():%H:%M:%S}] +{n} customer(s)  ids {ids}  "
                       f"(total this run: {total})"
                       + (f"  | aged {aged} customers by {args.days_per_run} day(s)" if aged else ""))
+            except psycopg2.errors.UniqueViolation:
+                # Another simulator (e.g. the GitHub Actions run) took the same new IDs
+                # at the same moment. The batch was rolled back; just try again next round.
+                print(f"[{datetime.now():%H:%M:%S}] ID clash with another simulator run; retrying.")
+                time.sleep(1)
+                continue
             except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
                 # Wi-Fi blip or Neon waking up: reconnect and carry on.
                 # (InterfaceError = the connection was already closed under us.)
