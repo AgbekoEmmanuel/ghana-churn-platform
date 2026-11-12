@@ -1,0 +1,36 @@
+# =====================================================================
+# Keep the platform awake
+# Render's free plan puts the site to sleep after 15 minutes with no
+# visitors, and waking it takes 30-60 seconds. This job knocks on the
+# site every 10 minutes so it is always ready when someone opens it.
+#
+# It calls /api/ping, which does not touch the database, so Neon can
+# still sleep between visits (it wakes in about a second) and its free
+# compute hours are not used up. Free for public repositories.
+# Note: GitHub may run scheduled jobs a few minutes late at busy times,
+# and pauses schedules if the repository has no activity for 60 days.
+# =====================================================================
+name: Keep site awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: keep-awake
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping the platform
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 https://ghana-churn-platform.onrender.com/api/ping || true)
+            if [ "$code" = "200" ]; then echo "Site is awake (attempt $attempt)"; exit 0; fi
+            echo "Attempt $attempt got '$code', retrying in 10s"; sleep 10
+          done
+          echo "Site did not answer"; exit 1
