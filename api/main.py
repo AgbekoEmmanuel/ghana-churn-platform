@@ -8,7 +8,8 @@ Endpoints (all return JSON):
   GET  /api/health                 is the server + database OK?
   GET  /api/summary                headline KPIs (customers, high risk, avg risk...)
   GET  /api/customers              the risk table (filter, search, paging)
-  GET  /api/customers/{id}         the customer 360 view + warning signs
+  GET  /api/customers/overview     analytics of the whole customer base (?scope=live|historical|all)
+  GET  /api/customers/{id}         the customer 360 view + personal details + warning signs
   GET  /api/trends                 arrivals and average risk over time (live chart)
   GET  /api/breakdown/{dimension}  risk by region / primary_channel / country / products
   GET  /api/model                  model name, version, test-set metrics (churn + dormancy)
@@ -40,8 +41,11 @@ import psycopg2.pool
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+from .profile import GENDER_SQL, build_profile, list_identity
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = PROJECT_DIR / "models" / "churn_model.pkl"
@@ -56,6 +60,8 @@ app = FastAPI(title="Ghana Bank Churn Platform API", version="1.0")
 # CORS lets a web page opened from another address (e.g. VS Code Live Server
 # on port 5500) call this API. Fine for local development.
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# Compress bigger JSON answers (the customer-base overview shrinks ~5x), so pages load faster.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # ---------------------------------------------------------------------
@@ -67,11 +73,18 @@ _pool = None
 _pool_lock = threading.Lock()
 
 
+# Fail fast instead of hanging when the network to Neon drops: give up on a new
+# connection after 10 s, and let TCP keepalives notice a dead one within ~1 minute
+# (the retry in query() then opens a fresh connection).
+CONNECT_ARGS = dict(connect_timeout=10, keepalives=1, keepalives_idle=30,
+                    keepalives_interval=10, keepalives_count=3)
+
+
 def get_pool():
     global _pool
     with _pool_lock:
         if _pool is None:
-            _pool = psycopg2.pool.ThreadedConnectionPool(1, 5, DATABASE_URL)
+            _pool = psycopg2.pool.ThreadedConnectionPool(1, 5, DATABASE_URL, **CONNECT_ARGS)
     return _pool
 
 
@@ -113,6 +126,22 @@ def query(sql: str, params=None, attempts: int = 4):
             if attempt == attempts - 1:
                 raise HTTPException(503, "Database is waking up, try again in a few seconds")
             time.sleep(0.5 * (attempt + 1))   # give Neon a moment to wake
+
+
+def page_query(sql: str, params: list, limit: int, offset: int, where_sql: str):
+    """One page of rows AND the total match count in a single round trip
+    (the SQL adds COUNT(*) OVER () AS total_count). Only a page past the end
+    needs a second, separate count."""
+    rows = query(sql, params + [limit, offset])
+    if rows:
+        total = rows[0]["total_count"]
+    elif offset:
+        total = query(f"SELECT COUNT(*) AS n FROM bank_customers WHERE {where_sql}", params)[0]["n"]
+    else:
+        total = 0
+    for r in rows:
+        r.pop("total_count", None)
+    return rows, total
 
 
 def clean(row: dict) -> dict:
@@ -243,6 +272,13 @@ def get_norms():
 # ---------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------
+@app.get("/api/ping")
+def ping():
+    """Keep-alive for the GitHub job that stops Render's free plan from sleeping.
+    Deliberately does NOT touch the database, so Neon can still nap (saves its free hours)."""
+    return {"status": "awake"}
+
+
 @app.get("/api/health")
 def health():
     query("SELECT 1 AS ok")
@@ -284,7 +320,7 @@ def summary():
 JOINED_SQL = """(created_at - make_interval(years => tenure)
                  - make_interval(days => mod(customer_id, 365)::int))::date"""
 
-LIST_COLUMNS = f"""customer_id, age, region, country, primary_channel, products_number,
+LIST_COLUMNS = f"""customer_id, age, gender, region, country, primary_channel, products_number,
                   balance, total_txn_count_90d, days_since_last_txn, failed_txn_count_90d,
                   complaints_90d, churn_probability, risk_band, created_at, scored_at,
                   dormancy_status, dormancy_probability, dormancy_band, tenure,
@@ -328,14 +364,155 @@ def customers(
     }[sort]
     where_sql = " AND ".join(where)
 
-    total = query(f"SELECT COUNT(*) AS n FROM bank_customers WHERE {where_sql}", params)[0]["n"]
-    rows = query(f"""
-        SELECT {LIST_COLUMNS} FROM bank_customers
+    rows, total = page_query(f"""
+        SELECT {LIST_COLUMNS}, COUNT(*) OVER () AS total_count FROM bank_customers
         WHERE {where_sql} ORDER BY {order} LIMIT %s OFFSET %s
-    """, params + [limit, offset])
+    """, params, limit, offset, where_sql)
     for r in rows:
         r["lifecycle_stage"] = lifecycle_stage(r)
+        r.update(list_identity(r))          # synthetic name / phone, stable per customer
     return {"total": total, "limit": limit, "offset": offset, "customers": rows}
+
+
+# ---------------------------------------------------------------------
+# Customer base overview (analytics page)
+# ---------------------------------------------------------------------
+SCOPES = {
+    "live": "data_source = 'simulator'",        # customers on the platform now
+    "historical": "data_source = 'kaggle'",     # the 10,000-customer history (includes who churned)
+    "all": "TRUE",
+}
+STATUS_ORDER = ["Active", "Slowing", "Going dormant", "Likely to churn", "Dormant", "Churned"]
+# Same rules as lifecycle_stage(), plus "Churned" for history rows where we know the outcome.
+STATUS_SQL = """(CASE WHEN churn = 1 THEN 'Churned'
+                      WHEN days_since_last_txn >= 90 THEN 'Dormant'
+                      WHEN risk_band = 'high' THEN 'Likely to churn'
+                      WHEN dormancy_band = 'high' THEN 'Going dormant'
+                      WHEN days_since_last_txn > 30 OR total_txn_count_90d < 6 THEN 'Slowing'
+                      ELSE 'Active' END)"""
+AGE_BAND_SQL = """(CASE WHEN age < 25 THEN '18–24' WHEN age < 35 THEN '25–34' WHEN age < 45 THEN '35–44'
+                        WHEN age < 55 THEN '45–54' WHEN age < 65 THEN '55–64' ELSE '65+' END)"""
+# Each breakdown: (label expression, sort expression). All run over the same "base" rows.
+DIMENSIONS = {
+    "age": (AGE_BAND_SQL, "MIN(age)"),
+    "gender": ("g", "MIN(CASE g WHEN 'Male' THEN 1 ELSE 2 END)"),
+    "income": ("""(CASE WHEN monthly_income < 1500 THEN 'Under GH₵ 1,500'
+                        WHEN monthly_income < 3000 THEN 'GH₵ 1,500 – 3,000'
+                        WHEN monthly_income < 5000 THEN 'GH₵ 3,000 – 5,000'
+                        WHEN monthly_income < 10000 THEN 'GH₵ 5,000 – 10,000'
+                        WHEN monthly_income < 15000 THEN 'GH₵ 10,000 – 15,000'
+                        ELSE 'GH₵ 15,000+' END)""", "MIN(monthly_income)"),
+    "balance": ("""(CASE WHEN balance = 0 THEN 'Zero balance'
+                         WHEN balance < 25000 THEN 'Under GH₵ 25k'
+                         WHEN balance < 75000 THEN 'GH₵ 25k – 75k'
+                         WHEN balance < 125000 THEN 'GH₵ 75k – 125k'
+                         WHEN balance < 175000 THEN 'GH₵ 125k – 175k'
+                         ELSE 'GH₵ 175k+' END)""", "MIN(balance)"),
+    "credit": ("""(CASE WHEN credit_score < 580 THEN 'Poor (<580)'
+                        WHEN credit_score < 670 THEN 'Fair (580–669)'
+                        WHEN credit_score < 740 THEN 'Good (670–739)'
+                        WHEN credit_score < 800 THEN 'Very good (740–799)'
+                        ELSE 'Excellent (800+)' END)""", "MIN(credit_score)"),
+    "region": ("region", "-COUNT(*)"),
+    "tenure": ("tenure::text", "MIN(tenure)"),
+    "products": ("products_number::text", "MIN(products_number)"),
+    "channel": ("primary_channel", "-COUNT(*)"),
+    "status": ("status", "MIN(array_position(ARRAY['" + "','".join(STATUS_ORDER) + "'], status))"),
+}
+
+
+# The customer mix changes slowly (a few customers per simulator run), so the
+# overview is kept for a minute instead of re-asking the database on every view.
+OVERVIEW_TTL_S = 60
+_overview_cache: dict = {}
+
+
+@app.get("/api/customers/overview")
+def customers_overview(scope: Literal["live", "historical", "all"] = "live"):
+    """Everything about the customer base in one call: headline numbers and
+    breakdowns by age, gender, income tier, balance, credit score, region,
+    tenure, products, channel and status."""
+    cached = _overview_cache.get(scope)
+    if cached and time.time() - cached[0] < OVERVIEW_TTL_S:
+        return cached[1]
+
+    base = f"""WITH base AS (
+        SELECT *, {GENDER_SQL} AS g, estimated_salary / 12.0 AS monthly_income, {STATUS_SQL} AS status
+        FROM bank_customers WHERE {SCOPES[scope]})"""
+
+    kpi_sql = """
+        SELECT COUNT(*) AS customers,
+               COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days')  AS new_30d,
+               ROUND(AVG(age), 1) AS avg_age,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY age) AS median_age,
+               COALESCE(SUM(balance), 0) AS total_balance,
+               ROUND(AVG(balance), 2) AS avg_balance,
+               COUNT(*) FILTER (WHERE balance = 0) AS zero_balance,
+               ROUND(AVG(monthly_income), 2) AS avg_income,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY monthly_income) AS median_income,
+               ROUND(AVG(tenure), 2) AS avg_tenure,
+               ROUND(AVG(products_number), 2) AS avg_products,
+               ROUND(AVG(credit_score)) AS avg_credit_score,
+               COUNT(*) FILTER (WHERE g = 'Male') AS male,
+               COUNT(*) FILTER (WHERE g = 'Female') AS female,
+               COUNT(*) FILTER (WHERE uses_mobile_app = 1 OR uses_ussd = 1
+                                   OR uses_internet_banking = 1 OR momo_linked = 1) AS digital,
+               COALESCE(SUM(uses_mobile_app), 0) AS uses_app,
+               COALESCE(SUM(uses_ussd), 0) AS uses_ussd,
+               COALESCE(SUM(uses_internet_banking), 0) AS uses_internet_banking,
+               COALESCE(SUM(momo_linked), 0) AS momo_linked,
+               COALESCE(SUM(credit_card), 0) AS credit_card,
+               COALESCE(SUM(salary_credited), 0) AS salary_credited,
+               COALESCE(SUM(active_member), 0) AS active_member,
+               ROUND(AVG(churn_probability), 4) AS avg_churn_probability,
+               COUNT(*) FILTER (WHERE churn IS NOT NULL) AS with_outcome
+        FROM base"""
+
+    union = " UNION ALL ".join(
+        f"""SELECT '{name}' AS dim, ({label})::text AS label, ({sort})::numeric AS sort_key,
+                   COUNT(*) AS customers,
+                   ROUND(AVG(churn_probability), 4) AS avg_churn_probability,
+                   ROUND(AVG((days_since_last_txn >= 90)::int), 4) AS dormant_rate,
+                   ROUND(AVG(churn), 4) AS churn_rate,
+                   ROUND(AVG(balance), 2) AS avg_balance,
+                   ROUND(AVG(monthly_income), 2) AS avg_income,
+                   ROUND(AVG(age), 1) AS avg_age
+            FROM base GROUP BY 2"""
+        for name, (label, sort) in DIMENSIONS.items())
+    # Status mix inside each age band (stacked bar on the page)
+    age_status_sql = f"SELECT {AGE_BAND_SQL} AS age_band, status, COUNT(*) AS customers FROM base GROUP BY 1, 2"
+
+    # ONE round trip to the database: the three result sets come back as JSON.
+    # (The SQL itself takes milliseconds; the network hop to Neon is the slow part.)
+    row = query(base + f"""
+        SELECT (SELECT row_to_json(k) FROM ({kpi_sql}) k)                         AS kpis,
+               (SELECT json_agg(d ORDER BY d.dim, d.sort_key) FROM ({union}) d)   AS dims,
+               (SELECT json_agg(a ORDER BY a.age_band) FROM ({age_status_sql}) a) AS age_status""")[0]
+    k = row["kpis"]
+    n = k["customers"] or 0
+    dims = {name: [] for name in DIMENSIONS}
+    for r in row["dims"] or []:
+        dim = r.pop("dim")
+        r.pop("sort_key")
+        r["share"] = round(r["customers"] / n, 4) if n else 0
+        dims[dim].append(r)
+    age_status = row["age_status"] or []
+
+    status_counts = {s["label"]: s["customers"] for s in dims["status"]}
+    result = {
+        "scope": scope,
+        "kpis": k | {"status": {s: status_counts.get(s, 0) for s in STATUS_ORDER}},
+        "dimensions": dims,
+        "age_status": age_status,
+        "status_order": STATUS_ORDER,
+        "notes": {
+            "income": "Monthly income = the Kaggle 'estimated salary', read as GH₵ per year, divided by 12.",
+            "gender": "Older simulated customers have no stored gender; a stable synthetic one is used.",
+            "churned": "Only the historical book knows who actually churned; live customers show risk instead.",
+        },
+    }
+    _overview_cache[scope] = (time.time(), result)
+    return result
 
 
 @app.get("/api/customers/{customer_id}")
@@ -344,10 +521,14 @@ def customer_360(customer_id: int):
     if not rows:
         raise HTTPException(404, "Customer not found")
     c = rows[0]
-    # Hide columns that must never reach the screen: gender (not used), the
-    # training label, and the simulator's hidden "future" (that would be cheating).
-    for hidden in ("gender", "went_dormant_90d", "sim_activity_prob", "sim_goes_dormant", "churn"):
+    # Hide columns that must never reach the screen: the training label and the
+    # simulator's hidden "future" (that would be cheating).
+    for hidden in ("went_dormant_90d", "sim_activity_prob", "sim_goes_dormant", "churn"):
         c.pop(hidden, None)
+    # Personal / KYC details (synthetic, stable per customer). Gender is shown on
+    # the profile only; the models never use it.
+    c["profile"] = build_profile(c)
+    c["gender"] = c["profile"]["gender"]
     c["dormancy_reasons"] = dormancy_reasons(c, get_norms())
     c["lifecycle_stage"] = lifecycle_stage(c)
     c["warning_signs"] = warning_signs(c, get_norms())
@@ -446,16 +627,16 @@ def dormancy_customers(
         where.append("region = %s")
         params.append(region)
     where_sql = " AND ".join(where)
-    total = query(f"SELECT COUNT(*) AS n FROM bank_customers WHERE {where_sql}", params)[0]["n"]
-    rows = query(f"""
+    rows, total = page_query(f"""
         SELECT {LIST_COLUMNS}, salary_credited, uses_mobile_app, momo_linked, active_member,
-               balance_change_3m_pct
+               balance_change_3m_pct, COUNT(*) OVER () AS total_count
         FROM bank_customers WHERE {where_sql} ORDER BY {order} LIMIT %s OFFSET %s
-    """, params + [limit, offset])
+    """, params, limit, offset, where_sql)
     norms = get_norms()
     for r in rows:
         r["lifecycle_stage"] = lifecycle_stage(r)
         r["dormancy_reasons"] = dormancy_reasons(r, norms)
+        r.update(list_identity(r))
     return {"total": total, "limit": limit, "offset": offset, "customers": rows}
 
 
@@ -536,6 +717,34 @@ def score(customer: WhatIfCustomer):
             "warning_signs": warning_signs(row, norms),
             "dormancy_reasons": dormancy_reasons(row, norms),
             "model_version": b["model_version"]}
+
+
+# ---------------------------------------------------------------------
+# Warm-up: as soon as the server starts, connect to Neon (waking it if it
+# was asleep), load both models and pre-compute the customer overview, in the
+# background. The first visitor then gets answers immediately instead of
+# paying for all of that on their first click.
+# ---------------------------------------------------------------------
+def _warm_up():
+    steps = [
+        ("database", lambda: query("SELECT 1 AS ok")),
+        ("churn model", get_model),
+        ("dormancy model", get_dormancy_model),
+        ("norms", get_norms),
+        ("overview", lambda: customers_overview("live")),
+        ("summary", summary),
+    ]
+    for name, step in steps:
+        try:
+            step()
+        except Exception as e:                      # never stop the server over a warm-up step
+            print(f"Warm-up: {name} skipped ({str(e)[:80]})")
+    print("Warm-up finished: database connected, models loaded.")
+
+
+@app.on_event("startup")
+def start_warm_up():
+    threading.Thread(target=_warm_up, daemon=True).start()
 
 
 # ---------------------------------------------------------------------

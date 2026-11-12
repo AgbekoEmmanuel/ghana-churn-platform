@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=20261112d">
   <!-- Chart.js draws the charts. Loaded from a CDN, so no install is needed. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
@@ -40,6 +40,12 @@
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+    <symbol id="i-pie" viewBox="0 0 24 24"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10Z"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92Z"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></symbol>
+    <symbol id="i-id" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="12" r="2.5"/><path d="M14 10h4M14 14h4"/></symbol>
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
   </defs>
 </svg>
@@ -166,6 +172,117 @@
 
     <!-- ================= CUSTOMERS ================= -->
     <section id="view-customers" class="view">
+      <div class="tabbar">
+        <div class="tabs" role="tablist" aria-label="Customer pages">
+          <button class="tab active" role="tab" data-ctab="base"><svg><use href="#i-pie"/></svg>Customer base</button>
+          <button class="tab" role="tab" data-ctab="directory"><svg><use href="#i-list"/></svg>Customer directory</button>
+        </div>
+        <div class="scope" id="scope-bar">
+          <span class="muted">Showing</span>
+          <div class="segmented" role="group" aria-label="Which customers">
+            <button class="seg active" data-scope="live" title="Customers on the platform now">Live book</button>
+            <button class="seg" data-scope="historical" title="The 10,000-customer history, including who churned">Historical book</button>
+            <button class="seg" data-scope="all">All</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Customer base: analytics of the whole book ===== -->
+      <div id="ctab-base" class="subview active">
+        <div class="kpi-strip four">
+          <div class="kpi"><span class="kpi-icon hot"><svg><use href="#i-users"/></svg></span>
+            <div><span class="kpi-label">Total customers</span><span class="kpi-value" id="ov-total">–</span><span class="kpi-sub" id="ov-total-sub">–</span></div></div>
+          <div class="kpi"><span class="kpi-icon"><svg><use href="#i-pulse"/></svg></span>
+            <div><span class="kpi-label">Active</span><span class="kpi-value" id="ov-active">–</span><span class="kpi-sub" id="ov-active-sub">–</span></div></div>
+          <div class="kpi"><span class="kpi-icon"><svg><use href="#i-moon"/></svg></span>
+            <div><span class="kpi-label">Dormant</span><span class="kpi-value" id="ov-dormant">–</span><span class="kpi-sub" id="ov-dormant-sub">–</span></div></div>
+          <div class="kpi"><span class="kpi-icon"><svg><use href="#i-alert"/></svg></span>
+            <div><span class="kpi-label" id="ov-lost-label">Likely to churn</span><span class="kpi-value" id="ov-lost">–</span><span class="kpi-sub" id="ov-lost-sub">–</span></div></div>
+        </div>
+
+        <div class="stat-grid" id="ov-stats"></div>
+
+        <div class="grid-2 status-row">
+          <div class="card">
+            <div class="card-head"><div><h2>Customer status</h2><p class="muted">where every customer stands today</p></div></div>
+            <div class="donut-row">
+              <div class="donut-box"><canvas id="ov-status-chart"></canvas>
+                <div class="donut-center"><b id="ov-status-total">–</b><span>customers</span></div></div>
+              <ul class="legend-list" id="ov-status-legend"></ul>
+            </div>
+          </div>
+          <div class="card insights-card">
+            <div class="card-head"><div><h2>At a glance</h2><p class="muted">the customer base in plain words</p></div></div>
+            <ul class="insights" id="ov-insights"></ul>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><div><h2>Age distribution</h2><p class="muted" id="ov-age-note">share of customers in each age band</p></div></div>
+            <div class="chart-box"><canvas id="ov-age-chart"></canvas><p class="chart-empty" hidden></p></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h2>Gender</h2><p class="muted">split and how the two groups compare</p></div></div>
+            <div class="donut-row compact">
+              <div class="donut-box small"><canvas id="ov-gender-chart"></canvas>
+                <div class="donut-center"><b id="ov-gender-lead">–</b><span id="ov-gender-lead-label">male</span></div></div>
+              <ul class="legend-list" id="ov-gender-legend"></ul>
+            </div>
+            <table class="compare" id="ov-gender-compare"></table>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><div><h2>Income tiers</h2><p class="muted" id="ov-income-note">monthly income, share of customers</p></div></div>
+            <div class="chart-box"><canvas id="ov-income-chart"></canvas><p class="chart-empty" hidden></p></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h2>Balance tiers</h2><p class="muted" id="ov-balance-note">account balance, share of customers</p></div></div>
+            <div class="chart-box"><canvas id="ov-balance-chart"></canvas><p class="chart-empty" hidden></p></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div><h2>Status by age band</h2><p class="muted">what share of each age group is active, slowing, going dormant, at risk, dormant or churned</p></div>
+            <div class="legend" id="ov-agestatus-legend"></div>
+          </div>
+          <div class="chart-box"><canvas id="ov-agestatus-chart"></canvas><p class="chart-empty" hidden></p></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><div><h2>Customers by region</h2><p class="muted">share of the book, highest first</p></div></div>
+            <div class="chart-box tall"><canvas id="ov-region-chart"></canvas><p class="chart-empty" hidden></p></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h2>Channels &amp; digital adoption</h2><p class="muted">main channel, and share using each service</p></div></div>
+            <div class="chart-box short"><canvas id="ov-channel-chart"></canvas><p class="chart-empty" hidden></p></div>
+            <div class="adoption" id="ov-adoption"></div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="card">
+            <div class="card-head"><div><h2>Years with the bank</h2><p class="muted">tenure</p></div></div>
+            <div class="chart-box short"><canvas id="ov-tenure-chart"></canvas><p class="chart-empty" hidden></p></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h2>Credit score</h2><p class="muted">bands</p></div></div>
+            <div class="chart-box short"><canvas id="ov-credit-chart"></canvas><p class="chart-empty" hidden></p></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h2>Products held</h2><p class="muted">number of products per customer</p></div></div>
+            <div class="chart-box short"><canvas id="ov-products-chart"></canvas><p class="chart-empty" hidden></p></div>
+          </div>
+        </div>
+        <p class="muted note" id="ov-notes"></p>
+      </div>
+
+      <!-- ===== Customer directory: every customer, click for the full profile ===== -->
+      <div id="ctab-directory" class="subview">
       <div class="card">
         <div class="filters">
           <label class="search"><svg><use href="#i-search"/></svg><input id="f-search" type="search" placeholder="Search customer ID…"></label>
@@ -200,8 +317,8 @@
         <div class="table-wrap">
           <table class="table">
             <thead><tr>
-              <th>Customer</th><th title="Approximate, from tenure (synthetic)">Joined</th><th>Age</th><th>Channel</th><th>Products</th>
-              <th>Txns (90d)</th><th>Days idle</th><th>Stage</th><th>Churn risk</th>
+              <th>Customer</th><th>Gender</th><th>Age</th><th>Phone</th><th title="Approximate, from tenure (synthetic)">Joined</th>
+              <th>Channel</th><th>Products</th><th>Days idle</th><th>Stage</th><th>Churn risk</th>
             </tr></thead>
             <tbody id="cust-rows"></tbody>
           </table>
@@ -211,6 +328,7 @@
           <span id="page-info" class="muted"></span>
           <button id="next" class="btn">Next →</button>
         </div>
+      </div>
       </div>
     </section>
 
@@ -345,6 +463,6 @@
   <div id="drawer-body"></div>
 </aside>
 
-<script src="app.js"></script>
+<script src="app.js?v=20261112d"></script>
 </body>
 </html>

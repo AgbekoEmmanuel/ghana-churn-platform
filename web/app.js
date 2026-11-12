@@ -35,8 +35,28 @@ async function api(path, options = {}) {
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} on ${path}`);
   const data = await res.json();
-  if (isGet) apiCache.set(path, data);
+  if (isGet) {
+    apiCache.set(path, data);
+    saveSnapshot(path, data);
+  }
   return data;
+}
+
+// ---- Instant start: the last screens you saw are kept in this browser ----
+// On the next visit the page draws them at once, then swaps in fresh data as it arrives.
+// Only the small dashboard answers are kept (no customer profiles).
+const SNAPSHOT_KEY = "cw-snapshot-v1";
+const SNAPSHOT_PATHS = /^\/api\/(summary|trends|breakdown\/|model$|customers\/overview|customers\?risk=high&limit=7$|dormancy\/(summary|idle-buckets|drivers))/;
+let snapshot = {};
+try { snapshot = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || "{}"); } catch (e) { snapshot = {}; }
+let snapshotTimer = null;
+function saveSnapshot(path, data) {
+  if (!SNAPSHOT_PATHS.test(path)) return;
+  snapshot[path] = data;
+  clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(() => {
+    try { localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshot)); } catch (e) { /* storage full or blocked: fine */ }
+  }, 500);
 }
 
 /** Make text safe to put inside HTML (stops odd characters breaking the page). */
@@ -67,8 +87,9 @@ function regionCode(region) {
   if (!words.length) return "–";
   return (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)).toUpperCase();
 }
+/** Round avatar: the customer's initials (or region code), with a small risk dot. */
 const avatar = (c, size = "") =>
-  `<span class="avatar ${size} ${c.risk_band || "unscored"}" title="${esc(c.region)}">${esc(regionCode(c.region))}</span>`;
+  `<span class="avatar ${size} ${c.risk_band || "unscored"}" title="${esc(c.full_name || c.region)}">${esc(c.initials || regionCode(c.region))}</span>`;
 
 function riskPill(band) {
   const b = band || "unscored";
@@ -127,26 +148,52 @@ function ring(p, colour, { size = 190, stroke = 12, label = "", valueText = null
 // =====================================================================
 const TITLES = {
   overview: ["Dashboard", "Live churn & dormancy across Ghana retail customers"],
-  customers: ["Customers", "Every live customer, scored by the churn model"],
+  customers: ["Customers", "Who our retail customers are, and every customer's full profile"],
   dormancy: ["Dormancy", "Accounts gone quiet, and those drifting that way"],
   whatif: ["What-if", "Build a customer and see what the models think"],
   model: ["Models", "What's running in production and how well it scores"],
 };
 
-function showView(name) {
+/** Show a section. "customers/directory" opens the Customers section on its directory tab. */
+function showView(target) {
+  let [name, sub] = String(target).split("/");
   if (!TITLES[name]) name = "overview";
-  if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);   // bookmarkable sections
+  if (name === "customers") sub = CUST_TABS.includes(sub) ? sub : custTab;
+  const hash = name === "customers" ? `#customers/${sub}` : `#${name}`;
+  if (location.hash !== hash) history.replaceState(null, "", hash);   // bookmarkable sections
   document.querySelectorAll(".nav-btn").forEach((t) => t.classList.toggle("active", t.dataset.view === name));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
-  const [title, sub] = TITLES[name];
+  const [title, subtitle] = TITLES[name];
   $("#view-title").textContent = title;
-  $("#view-sub").textContent = sub;
+  $("#view-sub").textContent = subtitle;
   window.scrollTo({ top: 0, behavior: "smooth" });
-  if (name === "customers") loadCustomers().catch(showError);
+  if (name === "customers") setCustTab(sub);
   if (name === "dormancy") loadDormancy().catch(showError);
   if (name === "model") loadModel().catch(showError);
 }
+
+// ---- Tabs inside the Customers section: "base" (analytics) and "directory" (the table) ----
+const CUST_TABS = ["base", "directory"];
+let custTab = "base";
+function setCustTab(tab) {
+  custTab = CUST_TABS.includes(tab) ? tab : "base";
+  document.querySelectorAll("[data-ctab]").forEach((t) => {
+    const on = t.dataset.ctab === custTab;
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", on);
+  });
+  document.querySelectorAll("#view-customers .subview").forEach((v) => v.classList.toggle("active", v.id === `ctab-${custTab}`));
+  $("#scope-bar").hidden = custTab !== "base";
+  if (location.hash.startsWith("#customers") && location.hash !== `#customers/${custTab}`) {
+    history.replaceState(null, "", `#customers/${custTab}`);
+  }
+  if (custTab === "base") loadOverview().catch(showError);
+  else loadCustomers().catch(showError);
+}
+document.querySelectorAll("[data-ctab]").forEach((t) => t.addEventListener("click", () => setCustTab(t.dataset.ctab)));
 document.querySelectorAll(".nav-btn").forEach((t) => t.addEventListener("click", () => showView(t.dataset.view)));
+// Typing a section link (e.g. #customers/directory) or pressing Back switches section too.
+window.addEventListener("hashchange", () => { if (location.hash.length > 1) showView(location.hash.slice(1)); });
 document.querySelectorAll("[data-goto]").forEach((b) => b.addEventListener("click", () => showView(b.dataset.goto)));
 
 // =====================================================================
@@ -240,8 +287,9 @@ function drawChart(key, canvasSel, config) {
 /** Show a message in place of a chart (e.g. "no data yet"), or clear it. */
 function setEmpty(canvasSel, message) {
   const canvas = $(canvasSel);
-  const note = canvas.parentElement.querySelector(".chart-empty");
+  const note = canvas.parentElement.querySelector(".chart-empty");   // some boxes (donuts) have none
   canvas.style.visibility = message ? "hidden" : "visible";
+  if (!note) return;
   note.hidden = !message;
   if (message) note.textContent = message;
 }
@@ -400,11 +448,12 @@ $("#breakdown-select").addEventListener("change", () => loadBreakdown().catch(sh
 
 async function loadTopRisk() {
   const { customers } = await api("/api/customers?risk=high&limit=7");
+  rememberCustomers(customers);
   $("#top-risk").innerHTML = customers.length
     ? customers.map((c) => `
         <li><button class="watch-item" data-id="${c.customer_id}">
           ${avatar(c)}
-          <span class="who"><strong>#${c.customer_id}</strong><span>${esc(c.region)} · ${esc(pretty(c.primary_channel))}</span></span>
+          <span class="who"><strong>${esc(c.full_name || `#${c.customer_id}`)}</strong><span>#${c.customer_id} · ${esc(c.region)} · ${esc(pretty(c.primary_channel))}</span></span>
           <span class="score-chip">${fmtPct(c.churn_probability)}</span>
         </button></li>`).join("")
     : `<li class="empty-msg">No high-risk customers right now</li>`;
@@ -421,7 +470,7 @@ $("#d-region").insertAdjacentHTML("beforeend", REGIONS.map((r) => `<option>${r}<
 let offset = 0;
 
 const custCell = (c) =>
-  `<div class="cust">${avatar(c)}<div><strong>#${c.customer_id}</strong><span>${esc(c.region)}</span></div></div>`;
+  `<div class="cust">${avatar(c)}<div><strong>${esc(c.full_name || `#${c.customer_id}`)}</strong><span>#${c.customer_id} · ${esc(c.region)}</span></div></div>`;
 
 async function loadCustomers() {
   const params = new URLSearchParams({ limit: PAGE_SIZE, offset, sort: $("#f-sort").value });
@@ -433,20 +482,22 @@ async function loadCustomers() {
   if (to) params.set("joined_to", to);
 
   const { total, customers } = await api(`/api/customers?${params}`);
+  rememberCustomers(customers);
   $("#cust-rows").innerHTML = customers.length
     ? customers.map((c) => `
         <tr data-id="${c.customer_id}" tabindex="0">
           <td>${custCell(c)}</td>
-          <td>${fmtJoined(c.joined_on)}</td>
+          <td class="gender-cell">${esc(c.gender ?? "–")}</td>
           <td>${c.age}</td>
+          <td>${esc(c.phone ?? "–")}</td>
+          <td>${fmtJoined(c.joined_on)}</td>
           <td>${esc(pretty(c.primary_channel))}</td>
           <td>${c.products_number}</td>
-          <td>${c.total_txn_count_90d}</td>
           <td>${c.days_since_last_txn}</td>
           <td class="stage">${esc(c.lifecycle_stage)}</td>
           <td><div class="risk-cell">${riskPill(c.risk_band)}${meter(c.churn_probability, c.risk_band)}<span class="muted">${fmtPct(c.churn_probability)}</span></div></td>
         </tr>`).join("")
-    : `<tr class="empty-row"><td colspan="9">No customers match these filters</td></tr>`;
+    : `<tr class="empty-row"><td colspan="10">No customers match these filters</td></tr>`;
 
   const end = Math.min(offset + PAGE_SIZE, total);
   $("#page-info").textContent = total ? `${offset + 1}–${end} of ${fmtInt(total)}` : "";
@@ -518,55 +569,168 @@ function dormancyRing(x, size) {
 }
 
 let openCustomerId = null;           // which customer the drawer shows (re-drawn on theme switch)
+let drawerTab = "summary";           // remembered while you click from customer to customer
+const fmtDate = (iso) => (iso ? new Date(iso + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "–");
+
+// ---- Loading a profile fast and safely ----
+// knownCustomers: the rows already on screen, so the panel can show the right name instantly.
+// profileCache:   profiles fetched (or being fetched) in the last minute, keyed by customer id.
+// openSeq:        a ticket per click. A slow answer for an EARLIER click is ignored, so the
+//                 panel can never show a different customer from the one you clicked last.
+const knownCustomers = new Map();
+const profileCache = new Map();
+const PROFILE_TTL_MS = 60 * 1000;
+let openSeq = 0;
+
+function rememberCustomers(list) {
+  (list || []).forEach((c) => knownCustomers.set(String(c.customer_id), c));
+}
+
+function fetchProfile(id) {
+  id = String(id);
+  const hit = profileCache.get(id);
+  if (hit && Date.now() - hit.t < PROFILE_TTL_MS) return hit.promise;
+  const promise = api(`/api/customers/${encodeURIComponent(id)}`)
+    .catch((err) => { profileCache.delete(id); throw err; });
+  profileCache.set(id, { t: Date.now(), promise });
+  return promise;
+}
+
 async function openCustomer(id) {
+  id = String(id);
+  const seq = ++openSeq;
   openCustomerId = id;
-  $("#drawer-body").innerHTML = '<p class="muted">Loading…</p>';
+  const row = knownCustomers.get(id) || {};
+  // Show who you clicked straight away; the details fill in when they arrive.
+  $("#drawer-body").innerHTML = `
+    <div class="drawer-head">
+      ${avatar({ ...row, customer_id: id }, "lg")}
+      <div><p class="eyebrow">Customer 360</p><h2>${esc(row.full_name || `#${id}`)}</h2>
+        <p class="muted">#${esc(id)}${row.region ? ` · ${esc(row.region)}` : ""}</p></div>
+    </div>
+    <p class="muted loading-line"><span class="spinner"></span>Loading full profile…</p>`;
   $("#drawer").classList.remove("hidden");
   $("#drawer-backdrop").classList.remove("hidden");
   try {
-    const c = await api(`/api/customers/${encodeURIComponent(id)}`);
-    const chips = Object.entries(c.channels).map(([name, v]) =>
-      name.includes("(90d)")
-        ? `<span class="chip on">${esc(name.replace(" (90d)", ""))}: ${v}</span>`
-        : `<span class="chip ${v ? "on" : "off"}">${esc(name)}</span>`).join("");
-    const kv = (pairs) => `<div class="kv">${pairs.map(([k, v]) => `<div><span>${k}</span><span>${esc(v)}</span></div>`).join("")}</div>`;
-    const dormantNote = c.dormancy_status === "dormant"
-      ? `<p class="stage-line"><span class="pill dormant">dormant</span> ${c.days_since_last_txn - 90} days past the 90-day rule</p>` : "";
+    const c = await fetchProfile(id);
+    if (seq !== openSeq) return;            // you have clicked someone else since: ignore this answer
+    renderCustomer(c);
+  } catch (err) {
+    if (seq !== openSeq) return;
+    $("#drawer-body").innerHTML = `<p class="muted">Could not load customer: ${esc(err.message)}</p>`;
+  }
+}
 
-    $("#drawer-body").innerHTML = `
-      <div class="drawer-head">
-        ${avatar(c, "lg")}
-        <div><p class="eyebrow">Customer 360</p><h2>#${c.customer_id}</h2>
-          <p class="muted">${esc(c.region)} · ${c.age} yrs · arrived ${fmtTime(c.created_at)}</p></div>
-      </div>
+// Start loading a profile when the mouse rests on a row for a moment, so a click opens it instantly.
+let hoverTimer = null;
+document.addEventListener("pointerover", (e) => {
+  const item = e.target.closest?.("[data-id]");
+  clearTimeout(hoverTimer);
+  if (item) hoverTimer = setTimeout(() => fetchProfile(item.dataset.id).catch(() => {}), 150);
+});
 
+/** The Customer 360 panel: Summary · Personal & KYC · Accounts & activity. */
+function renderCustomer(c) {
+  const p = c.profile || {};
+  const kin = p.next_of_kin || {};
+  const chips = Object.entries(c.channels).map(([name, v]) =>
+    name.includes("(90d)")
+      ? `<span class="chip on">${esc(name.replace(" (90d)", ""))}: ${v}</span>`
+      : `<span class="chip ${v ? "on" : "off"}">${esc(name)}</span>`).join("");
+  // kv(): label/value tiles. Values are escaped unless passed as {html: "..."} (our own markup only).
+  const kv = (pairs, cls = "") => `<div class="kv ${cls}">${pairs.map(([k, v]) =>
+    `<div><span>${k}</span><span>${v && typeof v === "object" ? v.html : esc(v ?? "–")}</span></div>`).join("")}</div>`;
+  const dormantNote = c.dormancy_status === "dormant"
+    ? `<p class="stage-line"><span class="pill dormant">dormant</span> ${c.days_since_last_txn - 90} days past the 90-day rule</p>` : "";
+  const tel = (num) => esc(String(num ?? "").replace(/\s/g, ""));
+  const kycBadge = p.kyc_status === "Verified"
+    ? `<span class="badge ok">✓ KYC verified</span>` : `<span class="badge warn">KYC: ${esc(p.kyc_status ?? "unknown")}</span>`;
+
+  $("#drawer-body").innerHTML = `
+    <div class="drawer-head">
+      ${avatar({ ...c, initials: p.initials, full_name: p.full_name }, "lg")}
+      <div><p class="eyebrow">Customer 360</p><h2>${esc(p.full_name || `#${c.customer_id}`)}</h2>
+        <p class="muted">#${c.customer_id} · ${esc(p.account_number ?? "")} · customer since ${fmtJoined(c.joined_on)}</p>
+        <div class="badges">${kycBadge}<span class="badge">${esc(p.gender ?? c.gender ?? "–")}</span>
+          <span class="badge">${p.age ?? c.age} yrs</span><span class="badge">${esc(c.region)}</span>
+          <span class="badge">${esc(c.lifecycle_stage)}</span></div></div>
+    </div>
+
+    <div class="dtabs" role="tablist">
+      <button class="dtab" data-dtab="summary">Summary</button>
+      <button class="dtab" data-dtab="personal">Personal &amp; KYC</button>
+      <button class="dtab" data-dtab="accounts">Accounts &amp; activity</button>
+    </div>
+
+    <div class="dpane" data-dpane="summary">
       <div class="rings">
         ${ring(c.churn_probability, bandColour(c.risk_band), { size: 170, small: true, label: "churn risk" })}
         ${dormancyRing(c, 170)}
       </div>
       <p class="stage-line">${riskPill(c.risk_band)} &nbsp;${esc(c.lifecycle_stage)}</p>
       ${dormantNote}
-
+      <div class="contact">
+        <a href="tel:${tel(p.phone)}"><svg><use href="#i-phone"/></svg><span>${esc(p.phone ?? "–")}<small>${esc(p.phone_network ?? "")} · mobile</small></span></a>
+        <a href="mailto:${esc(p.email ?? "")}"><svg><use href="#i-mail"/></svg><span>${esc(p.email ?? "–")}<small>email</small></span></a>
+        <div><svg><use href="#i-pin"/></svg><span>${esc(p.address ?? "–")}<small>${esc(p.digital_address ?? "")} · ${esc(p.home_branch ?? "")}</small></span></div>
+      </div>
       <h3 class="section-title">Churn warning signs</h3>${signsList(c.warning_signs)}
       <h3 class="section-title">Dormancy signals</h3>${signsList(c.dormancy_reasons)}
+    </div>
+
+    <div class="dpane" data-dpane="personal">
+      <h3 class="section-title">Identity</h3>
+      ${kv([["Full name", p.full_name], ["Gender", p.gender], ["Date of birth", fmtDate(p.date_of_birth)],
+            ["Age", `${p.age ?? c.age} years`], ["Marital status", p.marital_status], ["Ghana Card", p.ghana_card],
+            ["Preferred language", p.preferred_language], ["KYC status", p.kyc_status], ["Nationality", "Ghanaian"]], "three")}
+      <h3 class="section-title">Contact &amp; address</h3>
+      ${kv([["Mobile", { html: `<a href="tel:${tel(p.phone)}">${esc(p.phone ?? "–")}</a>` }], ["Network", p.phone_network],
+            ["Email", { html: `<a href="mailto:${esc(p.email ?? "")}">${esc(p.email ?? "–")}</a>` }],
+            ["Residential address", p.address], ["Digital address (GPS)", p.digital_address], ["Region", c.region]], "three")}
+      <h3 class="section-title">Employment &amp; income</h3>
+      ${kv([["Employment", p.employment_status], ["Occupation", p.occupation],
+            ["Monthly income", p.monthly_income != null ? fmtMoney(p.monthly_income) : "–"],
+            ["Income tier", p.income_tier], ["Salary paid in here", c.salary_credited ? "Yes" : "No"],
+            ["Active member", c.active_member ? "Yes" : "No"]], "three")}
+      <h3 class="section-title">Next of kin</h3>
+      ${kv([["Name", kin.name], ["Relationship", kin.relationship],
+            ["Phone", { html: `<a href="tel:${tel(kin.phone)}">${esc(kin.phone ?? "–")}</a>` }]], "three")}
+      <p class="synthetic-note"><svg><use href="#i-info"/></svg>Personal details are synthetic demo data, generated consistently for each customer.</p>
+    </div>
+
+    <div class="dpane" data-dpane="accounts">
+      <h3 class="section-title">Account</h3>
+      ${kv([["Account number", p.account_number], ["Account type", p.account_type], ["Home branch", p.home_branch],
+            ["Balance", fmtMoney(c.balance)], ["Customer since", `${fmtJoined(c.joined_on)} (${c.tenure} yrs)`],
+            ["Credit score", c.credit_score], ["Products held", c.products_number],
+            ["Credit card", c.credit_card ? "Yes" : "No"], ["Primary channel", pretty(c.primary_channel)]], "three")}
+      <h3 class="section-title">Products</h3>
+      <div class="chips">${(p.products || []).map((x) => `<span class="chip on">${esc(x)}</span>`).join("")}</div>
       <h3 class="section-title">Channels</h3><div class="chips">${chips}</div>
       <h3 class="section-title">Activity · last 90 days</h3>
       ${kv([["Transactions", c.total_txn_count_90d], ["Days since last", c.days_since_last_txn],
             ["Failed txns", c.failed_txn_count_90d], ["Complaints", c.complaints_90d],
             ["Branch visits", c.branch_visits_90d], ["ATM withdrawals", c.atm_withdrawals_90d],
-            ["Balance change", `${c.balance_change_3m_pct}%`], ["Salary paid in", c.salary_credited ? "Yes" : "No"]])}
-      <h3 class="section-title">Profile</h3>
-      ${kv([["Balance", fmtMoney(c.balance)], ["Products", c.products_number],
-            ["Joined", `${fmtJoined(c.joined_on)} (${c.tenure} yrs)`], ["Credit score", c.credit_score],
-            ["Active member", c.active_member ? "Yes" : "No"], ["Credit card", c.credit_card ? "Yes" : "No"],
-            ["Primary channel", pretty(c.primary_channel)], ["Country (Kaggle)", c.country]])}
-      <p class="foot-note">Scored by ${esc(c.model_version ?? "–")} at ${fmtTime(c.scored_at)}</p>`;
-  } catch (err) {
-    $("#drawer-body").innerHTML = `<p class="muted">Could not load customer: ${esc(err.message)}</p>`;
-  }
+            ["Balance change", `${c.balance_change_3m_pct}%`], ["Salary paid in", c.salary_credited ? "Yes" : "No"],
+            ["Country (Kaggle)", c.country]], "three")}
+      <p class="foot-note">Scored by ${esc(c.model_version ?? "–")} at ${fmtTime(c.scored_at)}</p>
+    </div>`;
+  setDrawerTab(drawerTab);
 }
 
+function setDrawerTab(tab) {
+  drawerTab = tab;
+  document.querySelectorAll("[data-dtab]").forEach((b) => b.classList.toggle("active", b.dataset.dtab === tab));
+  document.querySelectorAll("[data-dpane]").forEach((p) => p.classList.toggle("active", p.dataset.dpane === tab));
+}
+$("#drawer-body").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-dtab]");
+  if (b) setDrawerTab(b.dataset.dtab);
+});
+
 function closeDrawer() {
+  openSeq++;                         // any profile still loading must not pop up later
+  openCustomerId = null;
   $("#drawer").classList.add("hidden");
   $("#drawer-backdrop").classList.add("hidden");
 }
@@ -725,6 +889,7 @@ async function loadDormancyTable() {
   const params = new URLSearchParams({ status: dStatus, limit: PAGE_SIZE, offset: dOffset });
   if ($("#d-region").value) params.set("region", $("#d-region").value);
   const { total, customers } = await api(`/api/dormancy/customers?${params}`);
+  rememberCustomers(customers);
 
   const going = dStatus === "going";
   $("#d-head").innerHTML = `<th>Customer</th><th>Days idle</th><th>Txns (90d)</th><th>Balance</th>
@@ -760,6 +925,280 @@ $("#d-prev").addEventListener("click", () => { dOffset = Math.max(0, dOffset - P
 $("#d-next").addEventListener("click", () => { dOffset += PAGE_SIZE; loadDormancyTable().catch(showError); });
 
 // =====================================================================
+// CUSTOMER BASE (analytics of the whole book)
+// =====================================================================
+let ovScope = "live";
+const SCOPE_NAMES = { live: "live book", historical: "historical book", all: "whole book" };
+const STATUS_VARS = { "Active": "--st-active", "Slowing": "--st-slowing", "Going dormant": "--st-going",
+                      "Likely to churn": "--st-churn", "Dormant": "--st-dormant", "Churned": "--st-churned" };
+const pct = (x, d = 1) => (x == null ? "–" : `${(x * 100).toFixed(d)}%`);
+const statusColour = (s) => cssVar(STATUS_VARS[s] || "--unscored");
+
+/** Ordered tiers get one blue, light -> dark (a sequential scale, never a rainbow). */
+function ramp(n, from = 0.38) {
+  const rgb = cssVar("--chart-rgb");
+  return Array.from({ length: n }, (_, i) => `rgba(${rgb}, ${(from + ((1 - from) * i) / Math.max(1, n - 1)).toFixed(2)})`);
+}
+
+/** Small value labels at the end of each bar (e.g. "32.4%"), read from dataset.valueText. */
+const valueLabels = {
+  id: "valueLabels",
+  afterDatasetsDraw(chart) {
+    const ds = chart.data.datasets[0];
+    if (!ds?.valueText) return;
+    const horizontal = chart.options.indexAxis === "y";
+    const { ctx } = chart;
+    ctx.save();
+    ctx.font = "600 11px Poppins, system-ui, sans-serif";
+    ctx.fillStyle = cssVar("--text-2");
+    chart.getDatasetMeta(0).data.forEach((bar, i) => {
+      const text = ds.valueText[i];
+      if (!text) return;
+      if (horizontal) { ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillText(text, bar.x + 6, bar.y); }
+      else { ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText(text, bar.x, bar.y - 4); }
+    });
+    ctx.restore();
+  },
+};
+
+/** Tooltip lines shared by every breakdown chart. */
+function bucketTooltip(r) {
+  const lines = [` ${fmtInt(r.customers)} customers · ${pct(r.share)} of the book`];
+  if (r.churn_rate != null) lines.push(` Churned: ${pct(r.churn_rate)}`);
+  if (r.avg_churn_probability != null) lines.push(` Avg churn risk: ${pct(r.avg_churn_probability)}`);
+  if (r.dormant_rate != null) lines.push(` Dormant: ${pct(r.dormant_rate)}`);
+  if (r.avg_balance != null) lines.push(` Avg balance: ${fmtMoney(r.avg_balance)}`);
+  return lines;
+}
+
+/** One bar chart of a breakdown (share of customers per bucket). */
+function shareBars(key, sel, rows, { horizontal = false, colours = null, label = (r) => r.label, maxBar = 34, values = true } = {}) {
+  if (!chartsAvailable()) return;
+  if (!rows.length) { setEmpty(sel, "No customers in this view yet."); return; }
+  const data = rows.map((r) => +(r.share * 100).toFixed(1));
+  const scales = axes({ horizontal, pct: true });
+  const valueAxis = horizontal ? scales.x : scales.y;
+  const categoryAxis = horizontal ? scales.y : scales.x;
+  categoryAxis.ticks.autoSkip = false;          // every bucket keeps its name
+  valueAxis.suggestedMax = Math.min(100, Math.ceil((Math.max(...data) * 1.18) / 5) * 5);
+  drawChart(key, sel, {
+    type: "bar",
+    data: {
+      labels: rows.map(label),
+      datasets: [{ label: "Share of customers", data, extra: rows,
+                   valueText: values ? data.map((v) => `${v}%`) : null,
+                   backgroundColor: colours || cssVar("--chart-line"), hoverBackgroundColor: cssVar("--accent-2"),
+                   borderRadius: 5, borderSkipped: "start", maxBarThickness: maxBar }],
+    },
+    options: {
+      indexAxis: horizontal ? "y" : "x", responsive: true, maintainAspectRatio: false, animation: { duration: 500 },
+      layout: { padding: horizontal ? { right: 46 } : { top: 18 } },
+      scales,
+      plugins: { tooltip: { callbacks: {
+        title: (items) => items[0].label,
+        label: (ctx) => bucketTooltip(ctx.dataset.extra[ctx.dataIndex]),
+      } } },
+    },
+    plugins: [valueLabels],
+  });
+}
+
+function doughnut(key, sel, labels, values, colours, extra) {
+  if (!chartsAvailable()) return;
+  drawChart(key, sel, {
+    type: "doughnut",
+    data: { labels, datasets: [{ data: values, extra, backgroundColor: colours, borderColor: cssVar("--surface"),
+                                 borderWidth: 2, hoverOffset: 6, spacing: 1 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: "74%", animation: { duration: 600 },
+      plugins: { tooltip: { callbacks: { label: (ctx) => bucketTooltip(ctx.dataset.extra[ctx.dataIndex]) } } },
+    },
+  });
+}
+
+const legendRows = (rows, colourOf) => rows.map((r) =>
+  `<li><i style="background:${colourOf(r)}"></i><span>${esc(r.label)}</span><b>${fmtInt(r.customers)}</b><em>${pct(r.share)}</em></li>`).join("");
+
+async function loadOverview() {
+  const box = $("#ctab-base");
+  box.classList.add("loading");
+  try {
+    renderOverview(await api(`/api/customers/overview?scope=${ovScope}`));
+  } finally {
+    box.classList.remove("loading");
+  }
+}
+
+function renderOverview(d) {
+  const k = d.kpis, st = k.status, n = k.customers || 0, D = d.dimensions;
+  const share = (x) => (n ? x / n : 0);
+
+  // ---- Headline KPIs ----
+  $("#ov-total").textContent = fmtInt(n);
+  $("#ov-total-sub").textContent = d.scope === "live" ? `+${fmtInt(k.new_30d)} joined in the last 30 days`
+    : d.scope === "historical" ? "historical snapshot (Kaggle)" : "live + historical customers";
+  $("#ov-active").textContent = fmtInt(st["Active"]);
+  $("#ov-active-sub").textContent = `${pct(share(st["Active"]))} of customers`;
+  $("#ov-dormant").textContent = fmtInt(st["Dormant"]);
+  $("#ov-dormant-sub").textContent = `${pct(share(st["Dormant"]))} · 90+ days with no activity`;
+  if (d.scope === "live") {
+    $("#ov-lost-label").textContent = "Likely to churn";
+    $("#ov-lost").textContent = fmtInt(st["Likely to churn"]);
+    $("#ov-lost-sub").textContent = `${pct(share(st["Likely to churn"]))} flagged by the churn model`;
+  } else if (d.scope === "historical") {
+    $("#ov-lost-label").textContent = "Churned";
+    $("#ov-lost").textContent = fmtInt(st["Churned"]);
+    $("#ov-lost-sub").textContent = `${pct(share(st["Churned"]))} left the bank`;
+  } else {
+    $("#ov-lost-label").textContent = "Churned · at risk";
+    $("#ov-lost").textContent = fmtInt(st["Churned"] + st["Likely to churn"]);
+    $("#ov-lost-sub").textContent = `${fmtInt(st["Churned"])} churned · ${fmtInt(st["Likely to churn"])} at risk`;
+  }
+
+  // ---- Small stat tiles ----
+  const stat = (label, value, note, title = "") =>
+    `<div class="stat" title="${esc(title)}"><span>${label}</span><b>${value}</b><em>${note}</em></div>`;
+  $("#ov-stats").innerHTML = [
+    stat("Total deposits", fmtMoneyShort(k.total_balance), `${fmtMoneyShort(k.avg_balance)} per customer`, fmtMoney(k.total_balance)),
+    stat("Median monthly income", fmtMoney(k.median_income), `average ${fmtMoney(k.avg_income)}`),
+    stat("Median age", `${Math.round(k.median_age ?? 0)} yrs`, `average ${k.avg_age ?? "–"} yrs`),
+    stat("Years with the bank", `${(+k.avg_tenure || 0).toFixed(1)} yrs`, "average tenure"),
+    stat("Products per customer", (+k.avg_products || 0).toFixed(2), `${pct(share(k.credit_card), 0)} hold a credit card`),
+    stat("Credit score", fmtInt(k.avg_credit_score), "average (300–850)"),
+  ].join("");
+
+  // ---- Status donut ----
+  const status = D.status.filter((r) => r.customers > 0);
+  doughnut("ov-status", "#ov-status-chart", status.map((r) => r.label), status.map((r) => r.customers),
+           status.map((r) => statusColour(r.label)), status);
+  $("#ov-status-total").textContent = fmtInt(n);
+  $("#ov-status-legend").innerHTML = legendRows(status, (r) => statusColour(r.label));
+
+  // ---- Age ----
+  shareBars("ov-age", "#ov-age-chart", D.age);
+  const under35 = D.age.filter((r) => r.label === "18–24" || r.label === "25–34").reduce((a, r) => a + r.share, 0);
+  $("#ov-age-note").textContent = `share of customers in each age band · ${pct(under35)} are under 35`;
+
+  // ---- Gender ----
+  const g = D.gender;
+  const gColour = (r) => cssVar(r.label === "Male" ? "--g-male" : "--g-female");
+  doughnut("ov-gender", "#ov-gender-chart", g.map((r) => r.label), g.map((r) => r.customers), g.map(gColour), g);
+  const lead = g[0];
+  $("#ov-gender-lead").textContent = lead ? pct(lead.share, 0) : "–";
+  $("#ov-gender-lead-label").textContent = lead ? lead.label.toLowerCase() : "";
+  $("#ov-gender-legend").innerHTML = legendRows(g, gColour);
+  const riskRow = d.scope === "historical"
+    ? ["Churned", (r) => pct(r.churn_rate)]
+    : ["Avg churn risk", (r) => pct(r.avg_churn_probability)];
+  const rowsCmp = [
+    ["Average age", (r) => `${r.avg_age} yrs`],
+    ["Avg monthly income", (r) => fmtMoney(r.avg_income)],
+    ["Avg balance", (r) => fmtMoney(r.avg_balance)],
+    ["Dormant", (r) => pct(r.dormant_rate)],
+    riskRow,
+  ];
+  $("#ov-gender-compare").innerHTML = `<tr><th></th>${g.map((r) => `<th>${esc(r.label)}</th>`).join("")}</tr>` +
+    rowsCmp.map(([name, f]) => `<tr><td>${name}</td>${g.map((r) => `<td>${f(r)}</td>`).join("")}</tr>`).join("");
+
+  // ---- Income & balance tiers (ordered: one blue, light -> dark) ----
+  shareBars("ov-income", "#ov-income-chart", D.income, { horizontal: true, colours: ramp(D.income.length), maxBar: 26 });
+  $("#ov-income-note").textContent = `monthly income, share of customers · median ${fmtMoney(k.median_income)}`;
+  const balColours = ramp(D.balance.length).map((c, i) => (D.balance[i]?.label === "Zero balance" ? cssVar("--neutral-bar") : c));
+  shareBars("ov-balance", "#ov-balance-chart", D.balance, { colours: balColours, label: (r) => r.label.replace("GH₵ ", "") });
+  $("#ov-balance-note").textContent = `account balance in GH₵, share of customers · ${pct(share(k.zero_balance))} hold nothing`;
+
+  // ---- Status mix inside each age band (100% stacked) ----
+  drawAgeStatus(d);
+
+  // ---- Region, channel & adoption ----
+  shareBars("ov-region", "#ov-region-chart", D.region, { horizontal: true, maxBar: 18 });
+  shareBars("ov-channel", "#ov-channel-chart", D.channel, { horizontal: true, maxBar: 16, label: (r) => pretty(r.label) });
+  const adopt = [["Any digital channel", k.digital], ["Mobile app", k.uses_app], ["USSD", k.uses_ussd],
+                 ["MoMo linked", k.momo_linked], ["Internet banking", k.uses_internet_banking],
+                 ["Salary paid in", k.salary_credited]];
+  $("#ov-adoption").innerHTML = adopt.map(([name, v]) =>
+    `<div class="adopt"><span>${name}</span><b>${pct(share(v), 0)}</b><span class="meter"><span style="width:${(share(v) * 100).toFixed(1)}%"></span></span></div>`).join("");
+
+  // ---- Tenure, credit score, products ----
+  shareBars("ov-tenure", "#ov-tenure-chart", D.tenure, { maxBar: 22, values: false, label: (r) => `${r.label}y` });
+  shareBars("ov-credit", "#ov-credit-chart", D.credit, { colours: ramp(D.credit.length),
+    label: (r) => r.label.split(" (")[0].replace("Very good", "V. good") });
+  shareBars("ov-products", "#ov-products-chart", D.products, { maxBar: 40, label: (r) => `${r.label} product${r.label === "1" ? "" : "s"}` });
+
+  // ---- Plain-language facts ----
+  renderInsights(d);
+  $("#ov-notes").textContent = Object.values(d.notes || {}).join(" ");
+}
+
+function drawAgeStatus(d) {
+  if (!chartsAvailable()) return;
+  const bands = d.dimensions.age.map((r) => r.label);
+  const totals = Object.fromEntries(bands.map((b) => [b, 0]));
+  d.age_status.forEach((r) => { totals[r.age_band] = (totals[r.age_band] || 0) + r.customers; });
+  const present = d.status_order.filter((s) => d.age_status.some((r) => r.status === s && r.customers > 0));
+  $("#ov-agestatus-legend").innerHTML = present.map((s) =>
+    `<span><i class="sw" style="background:${statusColour(s)}"></i>${s}</span>`).join("");
+  if (!bands.length) { setEmpty("#ov-agestatus-chart", "No customers in this view yet."); return; }
+  const datasets = present.map((s) => ({
+    label: s,
+    data: bands.map((b) => {
+      const hit = d.age_status.find((r) => r.age_band === b && r.status === s);
+      return totals[b] ? +((100 * (hit?.customers || 0)) / totals[b]).toFixed(1) : 0;
+    }),
+    counts: bands.map((b) => d.age_status.find((r) => r.age_band === b && r.status === s)?.customers || 0),
+    backgroundColor: statusColour(s), borderColor: cssVar("--surface"), borderWidth: { right: 2 },
+    borderSkipped: false, maxBarThickness: 26, stack: "s",
+  }));
+  const scales = axes({ horizontal: true, pct: true });
+  scales.x.max = 100; scales.x.stacked = true; scales.y.stacked = true;
+  drawChart("ov-agestatus", "#ov-agestatus-chart", {
+    type: "bar",
+    data: { labels: bands, datasets },
+    options: {
+      indexAxis: "y", responsive: true, maintainAspectRatio: false, animation: { duration: 500 },
+      interaction: { mode: "index", axis: "y", intersect: false },
+      scales,
+      plugins: { tooltip: { callbacks: {
+        title: (items) => `Age ${items[0].label} · ${fmtInt(totals[items[0].label])} customers`,
+        label: (ctx) => ` ${ctx.dataset.label}: ${ctx.parsed.x}% (${fmtInt(ctx.dataset.counts[ctx.dataIndex])})`,
+      } } },
+    },
+  });
+}
+
+function renderInsights(d) {
+  const k = d.kpis, st = k.status, n = k.customers || 0, D = d.dimensions;
+  if (!n) { $("#ov-insights").innerHTML = '<li><i>i</i><span>No customers in this view yet.</span></li>'; return; }
+  const top = (rows) => rows.reduce((a, r) => (r.share > (a?.share ?? -1) ? r : a), null);
+  const share = (x) => x / n;
+  const age = top(D.age), income = top(D.income), regions = [...D.region].sort((a, b) => b.share - a.share);
+  const male = D.gender.find((r) => r.label === "Male"), female = D.gender.find((r) => r.label === "Female");
+  const facts = [
+    `<strong>${fmtInt(n)}</strong> customers in the ${SCOPE_NAMES[d.scope]}: <strong>${pct(share(st["Active"]))}</strong> active, <strong>${pct(share(st["Dormant"]))}</strong> dormant.`,
+    age && `The largest age group is <strong>${age.label}</strong> (${pct(age.share)}); the median customer is <strong>${Math.round(k.median_age)}</strong>.`,
+    male && female && `<strong>${pct(male.share)}</strong> male and <strong>${pct(female.share)}</strong> female.`,
+    income && `Most customers earn <strong>${esc(income.label)}</strong> a month (${pct(income.share)}); median income is <strong>${fmtMoney(k.median_income)}</strong>.`,
+    `<strong>${pct(share(k.zero_balance))}</strong> hold a zero balance; deposits total <strong>${fmtMoneyShort(k.total_balance)}</strong>.`,
+    regions.length > 1 && `<strong>${esc(regions[0].label)}</strong> is the biggest region (${pct(regions[0].share)}), then ${esc(regions[1].label)} (${pct(regions[1].share)}).`,
+    `<strong>${pct(share(k.digital))}</strong> use at least one digital channel; <strong>${pct(share(k.momo_linked))}</strong> have MoMo linked.`,
+  ];
+  if (d.scope === "live") {
+    const worst = D.age.reduce((a, r) => ((r.dormant_rate ?? 0) > (a?.dormant_rate ?? -1) ? r : a), null);
+    if (worst) facts.push(`Dormancy is highest among customers aged <strong>${worst.label}</strong> (${pct(worst.dormant_rate)} dormant).`);
+  } else {
+    const worst = D.age.reduce((a, r) => ((r.churn_rate ?? 0) > (a?.churn_rate ?? -1) ? r : a), null);
+    if (worst?.churn_rate != null) facts.push(`Customers aged <strong>${worst.label}</strong> churned the most: <strong>${pct(worst.churn_rate)}</strong> left.`);
+  }
+  $("#ov-insights").innerHTML = facts.filter(Boolean).map((f, i) => `<li><i>${i + 1}</i><span>${f}</span></li>`).join("");
+}
+
+document.querySelectorAll("[data-scope]").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-scope]").forEach((x) => x.classList.toggle("active", x === b));
+  ovScope = b.dataset.scope;
+  loadOverview().catch(showError);
+}));
+
+// =====================================================================
 // LIVE REFRESH LOOP
 // =====================================================================
 function showError(err) {
@@ -772,7 +1211,7 @@ async function refreshAll() {
   try {
     const s = await loadSummary();
     await Promise.all([loadTrends(), loadBreakdown(), loadTopRisk()]);
-    if ($("#view-customers").classList.contains("active")) await loadCustomers();
+    if ($("#view-customers").classList.contains("active")) await (custTab === "base" ? loadOverview() : loadCustomers());
     if ($("#view-dormancy").classList.contains("active")) await loadDormancy();
     $("#live-dot").className = "dot ok";
     const last = s.last_customer_at ? `last customer ${fmtTime(s.last_customer_at)}` : "no live customers yet";
@@ -806,7 +1245,7 @@ async function redrawFromCache() {
     await loadSummary();
     await Promise.all([loadTrends(), loadBreakdown(), loadTopRisk()]);
     if ($("#view-dormancy").classList.contains("active")) await loadDormancy();
-    if ($("#view-customers").classList.contains("active")) await loadCustomers();
+    if ($("#view-customers").classList.contains("active")) await (custTab === "base" ? loadOverview() : loadCustomers());
     if (openCustomerId && !$("#drawer").classList.contains("hidden")) await openCustomer(openCustomerId);
   } finally {
     useCache = false;
@@ -817,5 +1256,20 @@ async function redrawFromCache() {
 setInterval(() => { if (!document.hidden) refreshAll(); }, REFRESH_MS);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAll(); });
 
-if (location.hash.length > 1) showView(location.hash.slice(1));
-refreshAll();
+/** Start-up: draw the saved snapshot instantly (if this browser has one), then go live. */
+async function boot() {
+  const hash = location.hash.length > 1 ? location.hash.slice(1) : null;
+  const saved = Object.entries(snapshot);
+  if (saved.length) {
+    saved.forEach(([path, data]) => apiCache.set(path, data));
+    useCache = true;                     // the section's first draw also uses the snapshot
+    if (hash) showView(hash);
+    useCache = false;
+    await redrawFromCache().catch(() => {});
+    $("#status-text").textContent = "Saved view · updating…";
+  } else if (hash) {
+    showView(hash);
+  }
+  refreshAll();
+}
+boot();

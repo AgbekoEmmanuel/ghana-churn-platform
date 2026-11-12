@@ -43,6 +43,15 @@
   --low: #8f7cf0;                           /* violet */
   --unscored: #6f7a92;
   --ok: #34c38f;
+  /* Customer status (validated as a set for colour-blind safety) + gender */
+  --st-active: #4f8ff7;
+  --st-slowing: #1aa58d;
+  --st-going: #9a7cf0;
+  --st-churn: #e0507e;
+  --st-dormant: #b08600;
+  --st-churned: #6f7a92;
+  --g-male: #4f8ff7;
+  --g-female: #1aa58d;
 
   --tooltip-bg: rgba(8, 14, 32, .95);
   --option-bg: #0d1528;
@@ -103,6 +112,14 @@
   --low: #7457d6;
   --unscored: #8a94a8;
   --ok: #138a5e;
+  --st-active: #1d4ed8;
+  --st-slowing: #0f8a74;
+  --st-going: #7457d6;
+  --st-churn: #c8336a;
+  --st-dormant: #946f00;
+  --st-churned: #8a94a8;
+  --g-male: #1d4ed8;
+  --g-female: #0f8a74;
 
   --tooltip-bg: rgba(255, 255, 255, .97);
   --option-bg: #ffffff;
@@ -510,6 +527,122 @@ button:focus-visible, .watch-item:focus-visible, tr[data-id]:focus-visible { out
 .kv span:last-child { font-weight: 500; font-size: .86rem; }
 .foot-note { margin-top: 18px; color: var(--muted); font-size: .74rem; }
 
+/* ---------- Customers: page tabs + scope ---------- */
+.tabbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+.tabs { display: inline-flex; gap: 4px; padding: 5px; border-radius: 18px; background: var(--glass-deep); border: 1px solid var(--line); }
+.tab {
+  display: inline-flex; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--text-2);
+  font: inherit; font-size: .86rem; font-weight: 500; padding: 10px 18px; border-radius: 13px; cursor: pointer;
+  transition: background .2s, color .2s, box-shadow .2s;
+}
+.tab svg { width: 17px; height: 17px; }
+.tab:hover { color: var(--text); background: var(--glass-hover); }
+.tab.active { background: linear-gradient(140deg, #3b82f6, var(--accent-deep)); color: #fff; font-weight: 600; box-shadow: 0 8px 22px var(--accent-glow); }
+.scope { display: flex; align-items: center; gap: 10px; }
+.scope[hidden] { display: none; }
+.subview { display: none; }
+.subview.active { display: block; animation: fadeUp .3s ease both; }
+.subview > * + * { margin-top: 18px; }
+.subview .kpi-strip.four { margin-bottom: 0; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.grid-3 > .card { margin-top: 0; }
+.chart-box.short { height: 210px; }
+.loading .kpi-value, .loading .stat b { opacity: .35; }
+
+/* Small stat tiles under the KPI strip */
+.stat-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.stat {
+  padding: 14px 16px; border-radius: 18px; background: var(--glass); border: 1px solid var(--line);
+  box-shadow: var(--card-shadow); min-width: 0;
+}
+.stat span { display: block; color: var(--muted); font-size: .72rem; }
+.stat b { display: block; font-size: 1.15rem; font-weight: 600; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat em { display: block; font-style: normal; color: var(--text-2); font-size: .72rem; opacity: .85; }
+
+/* Status card fills its row height with the donut centred (no empty gap) */
+.status-row .card { display: flex; flex-direction: column; }
+.status-row .donut-row { flex: 1; }
+
+/* Donut + legend list */
+.donut-row { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 22px; align-items: center; }
+.donut-row.compact { grid-template-columns: 150px minmax(0, 1fr); }
+.donut-box { position: relative; height: 220px; }
+.donut-box.small { height: 150px; }
+.donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; text-align: center; }
+.donut-center b { font-size: 1.6rem; font-weight: 600; line-height: 1.1; }
+.donut-box.small .donut-center b { font-size: 1.2rem; }
+.donut-center span { color: var(--muted); font-size: .72rem; }
+.legend-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.legend-list li {
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto 52px; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 12px; font-size: .82rem; color: var(--text-2);
+}
+.legend-list li:hover { background: var(--glass-hover); }
+.legend-list li i { width: 10px; height: 10px; border-radius: 3px; }
+.legend-list li b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.legend-list li em { font-style: normal; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* "At a glance" plain-language facts */
+.insights { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.insights li {
+  display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border-radius: 14px;
+  background: var(--glass-2); border: 1px solid var(--line); font-size: .84rem; color: var(--text-2); line-height: 1.5;
+}
+.insights li i {
+  flex: none; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent-2); font-style: normal; font-weight: 700; font-size: .75rem;
+}
+.insights li strong { color: var(--text); }
+
+/* Gender comparison table */
+.compare { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: .8rem; }
+.compare th, .compare td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.compare th:first-child, .compare td:first-child { text-align: left; color: var(--muted); font-weight: 500; }
+.compare th { color: var(--text); font-weight: 600; }
+.compare tr:last-child td { border-bottom: 0; }
+
+/* Digital adoption meters */
+.adoption { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; margin-top: 16px; }
+.adopt { display: grid; grid-template-columns: 1fr auto; gap: 5px 8px; align-items: center; font-size: .8rem; color: var(--text-2); }
+.adopt b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.adopt .meter { grid-column: 1 / -1; width: 100%; height: 7px; }
+.adopt .meter span { background: linear-gradient(90deg, var(--accent-deep), #3b82f6, #7cb3ff); }
+
+/* ---------- Customer 360: wider drawer with its own tabs ---------- */
+.drawer { width: min(640px, calc(100% - 32px)); }
+.drawer-head .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; font-size: .72rem; font-weight: 500;
+  background: var(--glass-2); border: 1px solid var(--line); color: var(--text-2); }
+.badge.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); border-color: color-mix(in srgb, var(--ok) 35%, transparent); color: var(--text); }
+.badge.warn { background: color-mix(in srgb, var(--medium) 15%, transparent); border-color: color-mix(in srgb, var(--medium) 40%, transparent); color: var(--text); }
+.dtabs { display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: var(--glass-deep); border: 1px solid var(--line); margin: 4px 0 18px; }
+.dtab { flex: 1; border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: .8rem; font-weight: 500;
+  padding: 8px 10px; border-radius: 10px; cursor: pointer; white-space: nowrap; }
+.dtab.active { background: linear-gradient(140deg, #3b82f6, var(--accent-deep)); color: #fff; font-weight: 600; }
+.dpane { display: none; }
+.dpane.active { display: block; animation: fadeUp .25s ease both; }
+.kv.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.kv a { color: var(--accent-2); text-decoration: none; }
+.kv a:hover { text-decoration: underline; }
+.kv span:last-child { overflow-wrap: anywhere; }
+.contact { display: grid; gap: 8px; }
+.contact a, .contact div {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; text-decoration: none;
+  background: var(--glass-2); border: 1px solid var(--line); color: var(--text); font-size: .86rem;
+}
+.contact a:hover { background: var(--glass-hover); }
+.contact svg { color: var(--accent-2); width: 17px; height: 17px; }
+.contact small { display: block; color: var(--muted); font-size: .72rem; }
+.synthetic-note { display: flex; gap: 8px; align-items: center; margin-top: 16px; color: var(--muted); font-size: .72rem; }
+.synthetic-note svg { width: 14px; height: 14px; }
+.gender-cell { color: var(--text-2); }
+.loading-line { display: flex; align-items: center; gap: 10px; padding: 18px 2px; }
+.spinner {
+  width: 16px; height: 16px; border-radius: 50%; flex: none;
+  border: 2px solid var(--track); border-top-color: var(--accent-2); animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1200px) {
   .overview-grid { grid-template-columns: minmax(0, 1fr); }
@@ -517,6 +650,8 @@ button:focus-visible, .watch-item:focus-visible, tr[data-id]:focus-visible { out
   .col-side > * + * { margin-top: 0; }
   .kpi-strip.four { grid-template-columns: repeat(2, 1fr); }
   .kpi-strip.four .kpi:nth-child(3)::before { display: none; }
+  .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid-3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }
 @media (max-width: 900px) {
   body { padding: 14px 14px 96px; }
@@ -530,6 +665,13 @@ button:focus-visible, .watch-item:focus-visible, tr[data-id]:focus-visible { out
   .kpi-strip.four { grid-template-columns: minmax(0, 1fr); }
   .kpi-strip.four .kpi:nth-child(3)::before { display: block; }
   h1 { font-size: 1.5rem; }
+  .grid-3 { grid-template-columns: minmax(0, 1fr); }
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .donut-row, .donut-row.compact { grid-template-columns: minmax(0, 1fr); }
+  .tabs { width: 100%; }
+  .tab { flex: 1; justify-content: center; padding: 10px 8px; }
+  .scope { width: 100%; justify-content: space-between; }
+  .kv.three { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 560px) {
   body { padding: 0 0 92px; }
@@ -539,5 +681,7 @@ button:focus-visible, .watch-item:focus-visible, tr[data-id]:focus-visible { out
   .tile.text { grid-column: auto; }
   .head-tools { width: 100%; justify-content: space-between; }
   .chart-box.tall { height: 240px; }
-  .kv { grid-template-columns: 1fr; }
+  .kv, .kv.three { grid-template-columns: 1fr; }
+  .adoption { grid-template-columns: 1fr; }
+  .scope .seg { padding: 6px 10px; }
 }

@@ -58,14 +58,15 @@ import load_baseline as lb
 lb.rng = np.random.default_rng()
 rng = lb.rng
 
-BASE_COLUMNS = ["credit_score", "country", "age", "tenure", "balance",
+BASE_COLUMNS = ["credit_score", "country", "gender", "age", "tenure", "balance",
                 "products_number", "credit_card", "active_member",
                 "estimated_salary", "churn"]
 
 # Columns we write for each simulated customer. Not written: 'churn' and
-# 'went_dormant_90d' (unknown future) and 'gender' (we decided not to use it).
-# Added: the two hidden sim_ columns that drive ageing.
-INSERT_COLUMNS = [c for c in lb.INSERT_COLUMNS if c not in ("churn", "gender", "went_dormant_90d")] \
+# 'went_dormant_90d' (unknown future). Added: the two hidden sim_ columns that drive ageing.
+# Gender IS copied from the template so the platform can report the customer
+# mix; the churn and dormancy models still never see it (they list their own features).
+INSERT_COLUMNS = [c for c in lb.INSERT_COLUMNS if c not in ("churn", "went_dormant_90d")] \
                  + ["sim_activity_prob", "sim_goes_dormant"]
 
 
@@ -81,7 +82,7 @@ def load_templates(conn) -> pd.DataFrame:
         """)
         df = pd.DataFrame(cur.fetchall(), columns=BASE_COLUMNS)
     for c in BASE_COLUMNS:
-        if c != "country":
+        if c not in ("country", "gender"):
             df[c] = pd.to_numeric(df[c])
     if df.empty:
         raise SystemExit("No Kaggle rows found. Run load_baseline.py first (Phase 2).")
