@@ -55,7 +55,7 @@ WEB_DIR = PROJECT_DIR / "web"
 load_dotenv(PROJECT_DIR / ".env")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-app = FastAPI(title="Ghana Bank Churn Platform API", version="1.0")
+app = FastAPI(title="Pulse360 API", version="1.1")
 
 # CORS lets a web page opened from another address (e.g. VS Code Live Server
 # on port 5500) call this API. Fine for local development.

@@ -1,5 +1,5 @@
 /* =====================================================================
-   ChurnWatch GH - app.js
+   Pulse360 - app.js
    All the behaviour of the platform. Plain JavaScript, no framework.
 
    How it works:
@@ -68,6 +68,27 @@ function esc(value) {
 const fmtInt = (n) => (n ?? 0).toLocaleString();
 const fmtPct = (p) => (p == null ? "–" : `${(p * 100).toFixed(1)}%`);
 const fmtMoney = (n) => "GH₵ " + Math.round(n ?? 0).toLocaleString();
+
+// ---- Customer balances are hidden until someone clicks to reveal them ----
+// Shows "GH₵ ••••••" with a closed eye; a click shows the amount (open eye), another click hides it.
+// (A screen-privacy mask: it stops balances being read over someone's shoulder.)
+const MASK = "GH₵ ••••••";
+function maskedMoney(n) {
+  return `<button type="button" class="masked" data-amount="${esc(fmtMoney(n))}" aria-label="Show balance" title="Click to show the balance">` +
+         `<svg><use href="#i-eye-off"/></svg><span>${MASK}</span></button>`;
+}
+// Capture phase: runs before the row's own click, so revealing a balance doesn't open the customer.
+document.addEventListener("click", (e) => {
+  const m = e.target.closest?.(".masked");
+  if (!m) return;
+  e.stopPropagation();
+  e.preventDefault();
+  const shown = m.classList.toggle("revealed");
+  m.querySelector("span").textContent = shown ? m.dataset.amount : MASK;
+  m.querySelector("use").setAttribute("href", shown ? "#i-eye" : "#i-eye-off");
+  m.setAttribute("aria-label", shown ? "Hide balance" : "Show balance");
+  m.title = shown ? "Click to hide the balance" : "Click to show the balance";
+}, true);
 /** Short money for big headline numbers: GH₵ 19.8M */
 function fmtMoneyShort(n) {
   const v = n ?? 0;
@@ -267,7 +288,7 @@ function axes({ horizontal = false, pct = false } = {}) {
   const category = {
     border: { display: true, color: cssVar("--line-strong") },
     grid: { display: false },
-    ticks: { padding: 6, maxRotation: 0, autoSkipPadding: 14, color: cssVar("--text-2") },
+    ticks: { padding: 6, maxRotation: 0, autoSkipPadding: 14, autoSkip: !horizontal, color: cssVar("--text-2") },   // bar lists keep every name
   };
   return horizontal ? { x: value, y: category } : { x: category, y: value };
 }
@@ -701,7 +722,7 @@ function renderCustomer(c) {
     <div class="dpane" data-dpane="accounts">
       <h3 class="section-title">Account</h3>
       ${kv([["Account number", p.account_number], ["Account type", p.account_type], ["Home branch", p.home_branch],
-            ["Balance", fmtMoney(c.balance)], ["Customer since", `${fmtJoined(c.joined_on)} (${c.tenure} yrs)`],
+            ["Balance", { html: maskedMoney(c.balance) }], ["Customer since", `${fmtJoined(c.joined_on)} (${c.tenure} yrs)`],
             ["Credit score", c.credit_score], ["Products held", c.products_number],
             ["Credit card", c.credit_card ? "Yes" : "No"], ["Primary channel", pretty(c.primary_channel)]], "three")}
       <h3 class="section-title">Products</h3>
@@ -900,7 +921,7 @@ async function loadDormancyTable() {
           <td>${custCell(c)}</td>
           <td>${c.days_since_last_txn}</td>
           <td>${c.total_txn_count_90d}</td>
-          <td>${fmtMoney(c.balance)}</td>
+          <td>${maskedMoney(c.balance)}</td>
           <td>${going ? `<div class="risk-cell">${riskPill(c.dormancy_band)}<span class="muted">${fmtPct(c.dormancy_probability)}</span></div>`
                       : `<span class="pill dormant">${c.days_since_last_txn - 90} days</span>`}</td>
           <td>${riskPill(c.risk_band)}</td>

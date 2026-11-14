@@ -1,5 +1,5 @@
 /* =====================================================================
-   ChurnWatch GH - styles.css  (blue glassmorphism, dark + light mode)
+   Pulse360 - styles.css  (blue glassmorphism, dark + light mode)
    Colours are "tokens" (CSS variables). Dark mode is the default block;
    light mode overrides the same tokens under [data-theme="light"].
    app.js reads these tokens too, so the charts always match the page.
@@ -147,7 +147,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 14px/1.5 var(--font);
-  padding: 28px 28px 28px 116px;
+  padding: 24px 24px 24px 108px;
   overflow-x: hidden;
   transition: background-color .3s, color .3s;
 }
@@ -210,8 +210,26 @@ strong { font-weight: 600; }
 .nav-btn:hover span, .nav-btn:focus-visible span { opacity: 1; transform: translate(0, -50%); }
 
 /* ---------- Main window ---------- */
-.shell { max-width: 1480px; margin: 0 auto; border-radius: 32px; padding: 28px 30px 34px; }
+.shell { max-width: 1760px; margin: 0 auto; border-radius: 32px; padding: 28px 30px 34px; }
 .top { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+/* Pulse360 brand lockup: gradient tile with a heartbeat, then the wordmark */
+.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.brand-mark {
+  width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; color: #fff; flex: none;
+  background: linear-gradient(140deg, #3b82f6, var(--accent-deep)); box-shadow: 0 6px 18px var(--accent-glow);
+}
+.brand-mark svg { width: 20px; height: 20px; stroke-width: 2.1; }
+.brand-name { font-size: 1.12rem; font-weight: 700; letter-spacing: -.01em; color: var(--text); }
+.brand-name b { font-weight: 700; color: var(--accent-2); }
+.brand-tag {
+  font-size: .68rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+  padding-left: 10px; border-left: 1px solid var(--line-strong);
+}
+/* The heartbeat line "beats": it draws itself, pauses, repeats */
+.beat { stroke-dasharray: 100; animation: beat 2.6s ease-in-out infinite; }
+@keyframes beat { 0% { stroke-dashoffset: 100; } 45%, 100% { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .beat { animation: none; } }
+
 .eyebrow { color: var(--accent-2); font-size: .72rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 2px; }
 .subtitle { color: var(--muted); font-size: .85rem; }
 .top-actions { display: flex; align-items: center; gap: 10px; }
@@ -272,7 +290,7 @@ main { margin-top: 20px; }
 .card-head .muted { margin-top: 2px; }
 .head-tools { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
-.overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
+.overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 18px; align-items: start; }
 .col-main > * + * { margin-top: 18px; }
 .col-side > * + * { margin-top: 18px; }
 .note { margin-top: 16px; line-height: 1.6; }
@@ -331,7 +349,8 @@ main { margin-top: 20px; }
 .mix-legend li em { font-style: normal; color: var(--muted); width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ---------- Watchlist ---------- */
-.watchlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.watchlist { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.watchlist li { min-width: 0; }
 .watch-item {
   width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: var(--radius-sm);
   border: 1px solid transparent; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
@@ -342,6 +361,7 @@ main { margin-top: 20px; }
 .watch-item .who strong { display: block; font-size: .88rem; }
 .watch-item .who span { display: block; color: var(--muted); font-size: .74rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .score-chip {
+  flex: none;
   padding: 4px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600; font-variant-numeric: tabular-nums;
   background: linear-gradient(140deg, #3b82f6, var(--accent-deep)); color: #fff;
 }
@@ -685,3 +705,19 @@ button:focus-visible, .watch-item:focus-visible, tr[data-id]:focus-visible { out
   .adoption { grid-template-columns: 1fr; }
   .scope .seg { padding: 6px 10px; }
 }
+
+/* ---------- Masked customer balances (click to reveal) ---------- */
+.masked {
+  display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px 3px 8px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: .84rem; font-variant-numeric: tabular-nums; white-space: nowrap;
+  color: var(--text-2); background: var(--glass-2); border: 1px dashed var(--line-strong);
+  transition: background .2s, border-color .2s, color .2s;
+}
+.masked svg { width: 15px; height: 15px; color: var(--muted); }
+.masked span { letter-spacing: .04em; }
+.masked:hover { background: var(--glass-hover); border-color: var(--accent-border); color: var(--text); }
+.masked:hover svg { color: var(--accent-2); }
+.masked.revealed { color: var(--text); border-style: solid; border-color: var(--accent-border); background: var(--accent-soft); }
+.masked.revealed span { letter-spacing: 0; }
+.masked.revealed svg { color: var(--accent-2); }
+.kv .masked { margin-top: 2px; align-self: flex-start; }
